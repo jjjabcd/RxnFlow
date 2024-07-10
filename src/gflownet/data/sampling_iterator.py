@@ -224,7 +224,7 @@ class SamplingIterator(IterableDataset):
                     # fetch the valid trajectories endpoints
                     mols = [self.ctx.graph_to_mol(trajs[i]["result"]) for i in valid_idcs]
                     # ask the task to compute their reward
-                    online_flat_rew, m_is_valid = self.task.compute_flat_rewards(mols)
+                    online_flat_rew, m_is_valid = self.task.compute_flat_rewards(mols, valid_idcs)
                     assert (
                         online_flat_rew.ndim == 2
                     ), "FlatRewards should be (mbsize, n_objectives), even if n_objectives is 1"
@@ -250,7 +250,9 @@ class SamplingIterator(IterableDataset):
             if num_online > 0:
                 H = sum(i["fwd_logprob"] for i in trajs[num_offline:])
                 extra_info["entropy"] = -H / num_online
-                extra_info["length"] = np.mean([len(i["traj"]) for i in trajs[num_offline:]])
+                # NOTE: Do not count Stop
+                extra_info["length"] = np.mean([len(i["traj"]) - sum(i["is_sink"]) for i in trajs[num_offline:]])
+                # extra_info["length"] = np.mean([len(i["traj"]) for i in trajs[num_offline:]])
             if not self.sample_cond_info:
                 # If we're using a dataset of preferences, the user may want to know the id of the preference
                 for i, j in zip(trajs, idcs):
@@ -372,6 +374,10 @@ class SamplingIterator(IterableDataset):
             mols = [self.ctx.object_to_log_repr(t["result"]) if t["is_valid"] else "" for t in trajs]
         else:
             mols = [""] * len(trajs)
+        if hasattr(self.ctx, "traj_to_log_repr"):
+            trajs = [self.ctx.traj_to_log_repr(t["traj"]) if t["is_valid"] else "" for t in trajs]
+        else:
+            trajs = [""] * len(trajs)
 
         flat_rewards = flat_rewards.reshape((len(flat_rewards), -1)).data.numpy().tolist()
         rewards = rewards.data.numpy().tolist()
@@ -380,7 +386,7 @@ class SamplingIterator(IterableDataset):
         logged_keys = [k for k in sorted(cond_info.keys()) if k not in ["encoding", "preferences", "focus_dir"]]
 
         data = [
-            [mols[i], rewards[i]]
+            [mols[i], rewards[i], trajs[i]]
             + flat_rewards[i]
             + preferences[i]
             + focus_dir[i]
@@ -389,7 +395,7 @@ class SamplingIterator(IterableDataset):
         ]
 
         data_labels = (
-            ["smi", "r"]
+            ["smi", "r", "traj"]
             + [f"fr_{i}" for i in range(len(flat_rewards[0]))]
             + [f"pref_{i}" for i in range(len(preferences[0]))]
             + [f"focus_{i}" for i in range(len(focus_dir[0]))]

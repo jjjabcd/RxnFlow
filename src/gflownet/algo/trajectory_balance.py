@@ -125,20 +125,22 @@ class TrajectoryBalance(GFNAlgorithm):
         # instead give "ABC...Z" as a single input, but grab the logits at every timestep. Only works if using something
         # like a transformer with causal self-attention.
         self.model_is_autoregressive = False
+        self.setup_graph_sampler()
+        if self.cfg.variant == TBVariant.SubTB1:
+            self._subtb_max_len = self.global_cfg.algo.max_len + 2
+            self._init_subtb(torch.device("cuda"))  # TODO: where are we getting device info?
 
+    def setup_graph_sampler(self):
         self.graph_sampler = GraphSampler(
-            ctx,
-            env,
-            cfg.algo.max_len,
-            cfg.algo.max_nodes,
-            rng,
+            self.ctx,
+            self.env,
+            self.global_cfg.algo.max_len,
+            self.global_cfg.algo.max_nodes,
+            self.rng,
             self.sample_temp,
             correct_idempotent=self.cfg.do_correct_idempotent,
             pad_with_terminal_state=self.cfg.do_parameterize_p_b,
         )
-        if self.cfg.variant == TBVariant.SubTB1:
-            self._subtb_max_len = self.global_cfg.algo.max_len + 2
-            self._init_subtb(torch.device("cuda"))  # TODO: where are we getting device info?
 
     def create_training_data_from_own_samples(
         self, model: TrajectoryBalanceModel, n: int, cond_info: Tensor, random_action_prob: float
@@ -336,8 +338,41 @@ class TrajectoryBalance(GFNAlgorithm):
 
         return batch
 
+    def calculate_log_prob(
+        self,
+        action_categorical: GraphActionCategorical,
+        actions: list[tuple[int, int, int]],
+        **kwargs,
+    ):
+        # NOTE: To highlight the different btw fwd_cat.log_prob(...) & bck_cat.log_prob(...) in syn-tb
+        return action_categorical.log_prob(actions, **kwargs)
+
+    def get_action_cat(
+        self,
+        model: TrajectoryBalanceModel,
+        batch: gd.Batch,
+        cond_info: torch.Tensor,
+        batch_idx: torch.Tensor,
+        **kwargs,
+    ):
+        if self.cfg.do_parameterize_p_b:
+            fwd_cat, bck_cat, per_graph_out = model(batch, cond_info[batch_idx])
+        else:
+            if self.model_is_autoregressive:
+                fwd_cat, per_graph_out = model(batch, cond_info, batched=True)
+            else:
+                fwd_cat, per_graph_out = model(batch, cond_info[batch_idx])
+            bck_cat = None
+        return fwd_cat, bck_cat, per_graph_out
+
+    def calculate_log_Z(self, model, cond_info, **kwargs):
+        return model.logZ(cond_info, **kwargs)[:, 0]
+
     def compute_batch_losses(
-        self, model: TrajectoryBalanceModel, batch: gd.Batch, num_bootstrap: int = 0  # type: ignore[override]
+        self,
+        model: TrajectoryBalanceModel,
+        batch: gd.Batch,
+        num_bootstrap: int = 0,  # type: ignore[override]
     ):
         """Compute the losses over trajectories contained in the batch
 
@@ -371,18 +406,12 @@ class TrajectoryBalance(GFNAlgorithm):
 
         # Forward pass of the model, returns a GraphActionCategorical representing the forward
         # policy P_F, optionally a backward policy P_B, and per-graph outputs (e.g. F(s) in SubTB).
-        if self.cfg.do_parameterize_p_b:
-            fwd_cat, bck_cat, per_graph_out = model(batch, cond_info[batch_idx])
-        else:
-            if self.model_is_autoregressive:
-                fwd_cat, per_graph_out = model(batch, cond_info, batched=True)
-            else:
-                fwd_cat, per_graph_out = model(batch, cond_info[batch_idx])
+        fwd_cat, bck_cat, per_graph_out = self.get_action_cat(model, batch, cond_info, batch_idx)
         # Retreive the reward predictions for the full graphs,
         # i.e. the final graph of each trajectory
         log_reward_preds = per_graph_out[final_graph_idx, 0]
         # Compute trajectory balance objective
-        log_Z = model.logZ(cond_info)[:, 0]
+        log_Z = self.calculate_log_Z(model, cond_info)
         # Compute the log prob of each action in the trajectory
         if self.cfg.do_correct_idempotent:
             # If we want to correct for idempotent actions, we need to sum probabilities
@@ -392,7 +421,7 @@ class TrajectoryBalance(GFNAlgorithm):
             # repeat_interleave as with batch_idx
             ip_batch_idces = torch.arange(batch.ip_lens.shape[0], device=dev).repeat_interleave(batch.ip_lens)
             # Indicate that the `batch` corresponding to each action is the above
-            ip_log_prob = fwd_cat.log_prob(batch.ip_actions, batch=ip_batch_idces)
+            ip_log_prob = self.calculate_log_prob(fwd_cat, batch.ip_actions, batch=ip_batch_idces)
             # take the logsumexp (because we want to sum probabilities, not log probabilities)
             # TODO: numerically stable version:
             p = scatter(ip_log_prob.exp(), ip_batch_idces, dim=0, dim_size=batch_idx.shape[0], reduce="sum")
@@ -405,16 +434,16 @@ class TrajectoryBalance(GFNAlgorithm):
                 bck_ip_batch_idces = torch.arange(batch.bck_ip_lens.shape[0], device=dev).repeat_interleave(
                     batch.bck_ip_lens
                 )
-                bck_ip_log_prob = bck_cat.log_prob(batch.bck_ip_actions, batch=bck_ip_batch_idces)
+                bck_ip_log_prob = self.calculate_log_prob(bck_cat, batch.bck_ip_actions, batch=bck_ip_batch_idces)
                 bck_p = scatter(
                     bck_ip_log_prob.exp(), bck_ip_batch_idces, dim=0, dim_size=batch_idx.shape[0], reduce="sum"
                 )
                 log_p_B = bck_p.clamp(1e-30).log()
         else:
             # Else just naively take the logprob of the actions we took
-            log_p_F = fwd_cat.log_prob(batch.actions)
+            log_p_F = self.calculate_log_prob(fwd_cat, batch.actions)
             if self.cfg.do_parameterize_p_b:
-                log_p_B = bck_cat.log_prob(batch.bck_actions)
+                log_p_B = self.calculate_log_prob(bck_cat, batch.bck_actions)
 
         if self.cfg.do_parameterize_p_b:
             # If we're modeling P_B then trajectories are padded with a virtual terminal state sF,
