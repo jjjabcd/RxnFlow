@@ -29,4 +29,8 @@ There is some valence issue, we remove 2623'th Atom (O) in PPARG.
 ## SBDD optimization (zero-shot sampling with pocket-conditioning)
 
 From https://github.com/gnina/models/tree/master/data/CrossDocked2020
-15,201 training pockets + 100 test pockets.
+
+(15,201 training pockets + 100 test pockets.)
+
+## KRAS-G12C (example)
+center: 1.872, -8.260, -1.361

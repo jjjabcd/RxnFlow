@@ -58,6 +58,11 @@ class SBDDSampler(SynthesisGFNSampler):
         return samples
 
     @torch.no_grad()
+    def set_pocket(self, protein_path: str | Path, center: tuple[float, float, float]):
+        self.model.pocket_embed = None
+        self.task.set_protein(str(protein_path), center)
+
+    @torch.no_grad()
     def sample_against_pocket(
         self,
         protein_path: str | Path,
@@ -84,8 +89,7 @@ class SBDDSampler(SynthesisGFNSampler):
             'reward_docking': <proxy>,
         }
         """
-        self.model.pocket_embed = None
-        self.task.set_protein(str(protein_path), center)
+        self.set_pocket(protein_path, center)
         return self.sample(n, calc_reward)
 
 

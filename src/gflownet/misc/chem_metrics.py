@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import torch
 
@@ -65,6 +66,12 @@ def mol2qed(mols: list[RDMol], default=0):
     return torch.tensor([safe(QED.qed, mol, default) for mol in mols])
 
 
-def mol2vina(mols: list[RDMol], protein_path: str, center: tuple[float, float, float]):
-    vina_score = unidock_scores(mols, protein_path, center)
-    return torch.tensor(vina_score, dtype=torch.float).neg().clip(min=0.0)
+def mol2vina(
+    mols: list[RDMol],
+    protein_path: str,
+    center: tuple[float, float, float],
+    search_mode: str = "balance",
+    out_dir: Path | str | None = None,
+):
+    vina_score = unidock_scores(mols, protein_path, center, search_mode=search_mode, out_dir=out_dir)
+    return torch.tensor(vina_score, dtype=torch.float).clip(max=0.0)

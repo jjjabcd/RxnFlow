@@ -18,12 +18,17 @@ def unidock_scores(
     center: tuple[float, float, float],
     seed: int = 1,
     search_mode: str = "balance",
+    out_dir: Path | str | None = None,
 ) -> list[float]:
     docking_scores: list[float] = [0.0] * len(rdmol_list)
     with tempfile.TemporaryDirectory() as tempdir:
         root_dir = Path(tempdir)
-        out_dir = root_dir / "docking"
-        out_dir.mkdir()
+        if out_dir is None:
+            out_dir = root_dir / "docking"
+            out_dir.mkdir()
+        else:
+            out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
         etkdg_dir = root_dir / "etkdg"
         etkdg_dir.mkdir()
         index_path = root_dir / "index.txt"

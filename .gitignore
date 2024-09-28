@@ -14,6 +14,7 @@ slurm-*
 wandb*
 nogit*/
 unidock_2024*
+weights/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
