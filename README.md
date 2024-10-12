@@ -12,7 +12,9 @@ RxnFlow are a synthesis-oriented generative framework that aims to discover dive
 - RxnFlow can explore broader chemical space within less reaction steps, resulting in higher diversity, higher potency, and lower synthetic complexity of generated molecules.
 - RxnFlow can generate molecules with expanded or modified building block libaries without retraining.
 
-The implementation of this project builds upon the [recursionpharma/gflownet](https://github.com/recursionpharma/gflownet) with MIT license. This repository was developed for research, and the code for real-world drug discovery will be released later.
+This project is based on gflownet, and `src/gflownet/` is a clone of [recursionpharma/gflownet@v0.2.0](https://github@v0.2.0.com/recursionpharma/gflownet/tree/v0@v0.2.0.2@v0.2.0.0). Since we have updated the gflownet version and performed modularization after submission, we do not guarantee that current version will reproduce the same results as the paper. You can access the reproducing codes and scripts from [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
+
+This repository was developed for research. The code for real-world drug discovery will be released later.
 
 ## Setup
 
@@ -32,7 +34,7 @@ pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.3.1+cu
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
 
-The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/template/hb_edited.txt](data/template/hb_edited.txt).
+The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/templates/hb_edited.txt](data/template/hb_edited.txt).
 
 The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10.
 
@@ -76,10 +78,13 @@ python script/opt_unidock.py \
 **Example (KRAS G12C mutation)**
 
 - Use center coordinates
+
   ```bash
   python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras
   ```
+
 - Use center of the reference ligand
+
   ```bash
   python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
   ```
@@ -104,11 +109,14 @@ python script/sampling_zeroshot.py \
 
 **Example (KRAS G12C mutation)**
 
-- csv file: Save molecules with their rewards (GPU is recommended for reward calculation)
+- `csv` format: save molecules with their rewards (GPU is recommended)
+
   ```bash
   python script/sampling_zeroshot.py -o out.csv -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb --cuda
   ```
-- smi file: Save molecules only (CPU: 0.06s/mol, GPU: 0.04s/mol)
+
+- `smi` format: save molecules only (CPU: 0.06s/mol, GPU: 0.04s/mol)
+
   ```bash
   python script/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
   ```
@@ -124,17 +132,17 @@ If you want to train RxnFlow with your custom reward function, you can use the b
   from gflownet.base import SynthesisTrainer, SynthesisGFNSampler, BaseTask
   from gflownet.trainer import FlatRewards
   from rdkit.Chem import Mol as RDMol, QED
-
+  
   class QEDTask(BaseTask):
       def compute_flat_rewards(self, mols: list[RDMol], batch_idx: list[int]) -> tuple[FlatRewards, torch.Tensor]:
           fr = torch.tensor([QED.qed(mol) for mol in mols], dtype=torch.float).reshape(-1, 1)
           is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
           return FlatRewards(fr), is_valid_t
-
+  
   class QEDSynthesisTrainer(SynthesisTrainer): # For online training
       def setup_task(self):
           self.task: QEDTask = QEDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
-
+  
   class QEDSynthesisSampler(SynthesisGFNSampler): # Sampling with pre-trained GFlowNet
       def setup_task(self):
           self.task: QEDTask = QEDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
@@ -142,9 +150,7 @@ If you want to train RxnFlow with your custom reward function, you can use the b
 
 ### Reproducing experimental results
 
-All scripts to reproduce the results of paper are in `./experiments/`.
-
-The dataset is available at [Google Drive](https://drive.google.com/drive/folders/1ZngDj3-b8ZLcR9J4ekIrGpxTklMXNIn-). Please decompress them at `./data/experiments/`.
+Current version do not provide the reproducing code. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive). 
 
 ## Citation
 

@@ -1,9 +1,10 @@
 import gc
+import logging
 import os
 import pathlib
 import shutil
 import time
-from typing import Any, Callable, Dict, List, NewType, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 import numpy as np
 import torch
@@ -13,92 +14,19 @@ import torch_geometric.data as gd
 import wandb
 from omegaconf import OmegaConf
 from rdkit import RDLogger
-from rdkit.Chem.rdchem import Mol as RDMol
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
+from gflownet import GFNAlgorithm, GFNTask
+from gflownet.data.data_source import DataSource
 from gflownet.data.replay_buffer import ReplayBuffer
-from gflownet.data.sampling_iterator import SamplingIterator
 from gflownet.envs.graph_building_env import GraphActionCategorical, GraphBuildingEnv, GraphBuildingEnvContext
-from gflownet.utils.misc import create_logger
+from gflownet.envs.seq_building_env import SeqBatch
+from gflownet.utils.misc import create_logger, set_main_process_device, set_worker_rng_seed
 from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
-from gflownet.utils.misc import set_worker_env
+from gflownet.utils.sqlite_log import SQLiteLogHook
 
 from .config import Config
-
-# This type represents an unprocessed list of reward signals/conditioning information
-FlatRewards = NewType("FlatRewards", Tensor)  # type: ignore
-
-# This type represents the outcome for a multi-objective task of
-# converting FlatRewards to a scalar, e.g. (sum R_i omega_i) ** beta
-RewardScalar = NewType("RewardScalar", Tensor)  # type: ignore
-
-
-class GFNAlgorithm:
-    updates: int = 0
-
-    def step(self):
-        self.updates += 1
-
-    def compute_batch_losses(
-        self, model: nn.Module, batch: gd.Batch, num_bootstrap: Optional[int] = 0
-    ) -> Tuple[Tensor, Dict[str, Tensor]]:
-        """Computes the loss for a batch of data, and proves logging informations
-
-        Parameters
-        ----------
-        model: nn.Module
-            The model being trained or evaluated
-        batch: gd.Batch
-            A batch of graphs
-        num_bootstrap: Optional[int]
-            The number of trajectories with reward targets in the batch (if applicable).
-
-        Returns
-        -------
-        loss: Tensor
-            The loss for that batch
-        info: Dict[str, Tensor]
-            Logged information about model predictions.
-        """
-        raise NotImplementedError()
-
-
-class GFNTask:
-    def cond_info_to_logreward(self, cond_info: Dict[str, Tensor], flat_reward: FlatRewards) -> RewardScalar:
-        """Combines a minibatch of reward signal vectors and conditional information into a scalar reward.
-
-        Parameters
-        ----------
-        cond_info: Dict[str, Tensor]
-            A dictionary with various conditional informations (e.g. temperature)
-        flat_reward: FlatRewards
-            A 2d tensor where each row represents a series of flat rewards.
-
-        Returns
-        -------
-        reward: RewardScalar
-            A 1d tensor, a scalar log-reward for each minibatch entry.
-        """
-        raise NotImplementedError()
-
-    def compute_flat_rewards(self, mols: List[RDMol], batch_idx: List[int]) -> Tuple[FlatRewards, Tensor]:
-        """Compute the flat rewards of mols according the the tasks' proxies
-
-        Parameters
-        ----------
-        mols: List[RDMol]
-            A list of RDKit molecules.
-        batch_idx: List[int]
-            A list of batch index
-        Returns
-        -------
-        reward: FlatRewards
-            A 2d tensor, a vector of scalar reward for valid each molecule.
-        is_valid: Tensor
-            A 1d tensor, a boolean indicating whether the molecule is valid.
-        """
-        raise NotImplementedError()
 
 
 class Closable(Protocol):
@@ -125,7 +53,6 @@ class GFNTrainer:
         # the same as `model`.
         self.sampling_model: nn.Module
         self.replay_buffer: Optional[ReplayBuffer]
-        self.mb_size: int
         self.env: GraphBuildingEnv
         self.ctx: GraphBuildingEnvContext
         self.task: GFNTask
@@ -145,6 +72,7 @@ class GFNTrainer:
         self.cfg: Config = OmegaConf.merge(self.default_cfg, config)
 
         self.device = torch.device(self.cfg.device)
+        set_main_process_device(self.device)
         # Print the loss every `self.print_every` iterations
         self.print_every = self.cfg.print_every
         # These hooks allow us to compute extra quantities when sampling data
@@ -155,11 +83,8 @@ class GFNTrainer:
 
         self.setup()
 
-    def set_default_hps(self, cfg: Config):
+    def set_default_hps(self, base: Config):
         raise NotImplementedError()
-
-    def setup_env(self):
-        self.env = GraphBuildingEnv()
 
     def setup_env_context(self):
         raise NotImplementedError()
@@ -190,122 +115,105 @@ class GFNTrainer:
         os.makedirs(self.cfg.log_dir)
 
         RDLogger.DisableLog("rdApp.*")
-        self.rng = np.random.default_rng(142857)
-        self.setup_env()
+        set_worker_rng_seed(self.cfg.seed)
+        self.env = GraphBuildingEnv()
         self.setup_data()
         self.setup_task()
         self.setup_env_context()
         self.setup_algo()
         self.setup_model()
-        set_worker_env("trainer", self)
-        set_worker_env("env", self.env)
-        set_worker_env("ctx", self.ctx)
-        set_worker_env("algo", self.algo)
-        set_worker_env("task", self.task)
 
-    def _wrap_for_mp(self, obj, send_to_device=False):
+    def _wrap_for_mp(self, obj):
         """Wraps an object in a placeholder whose reference can be sent to a
         data worker process (only if the number of workers is non-zero)."""
-        if send_to_device:
-            obj.to(self.device)
         if self.cfg.num_workers > 0 and obj is not None:
-            wapper = mp_object_wrapper(
+            wrapper = mp_object_wrapper(
                 obj,
                 self.cfg.num_workers,
-                cast_types=(gd.Batch, GraphActionCategorical),
+                cast_types=(gd.Batch, GraphActionCategorical, SeqBatch),
                 pickle_messages=self.cfg.pickle_mp_messages,
             )
-            self.to_terminate.append(wapper.terminate)
-            return wapper.placeholder, torch.device("cpu")
+            self.to_terminate.append(wrapper.terminate)
+            return wrapper.placeholder
         else:
-            return obj, self.device
+            return obj
 
     def build_callbacks(self):
         return {}
 
-    def build_training_data_loader(self) -> DataLoader:
-        model, dev = self._wrap_for_mp(self.sampling_model, send_to_device=True)
-        replay_buffer, _ = self._wrap_for_mp(self.replay_buffer, send_to_device=False)
-        iterator = SamplingIterator(
-            self.training_data,
-            model,
-            self.ctx,
-            self.algo,
-            self.task,
-            dev,
-            batch_size=self.cfg.algo.global_batch_size,
-            illegal_action_logreward=self.cfg.algo.illegal_action_logreward,
-            replay_buffer=replay_buffer,
-            ratio=self.cfg.algo.offline_ratio,
-            log_dir=str(pathlib.Path(self.cfg.log_dir) / "train"),
-            random_action_prob=self.cfg.algo.train_random_action_prob,
-            det_after=self.cfg.algo.train_det_after,
-            hindsight_ratio=self.cfg.replay.hindsight_ratio,
-        )
-        for hook in self.sampling_hooks:
-            iterator.add_log_hook(hook)
-        return DataLoader(
-            iterator,
+    def _make_data_loader(self, src):
+        return torch.utils.data.DataLoader(
+            src,
             batch_size=None,
             num_workers=self.cfg.num_workers,
             persistent_workers=self.cfg.num_workers > 0,
             prefetch_factor=1 if self.cfg.num_workers else None,
         )
+
+    def build_training_data_loader(self) -> DataLoader:
+        # Since the model may be used by a worker in a different process, we need to wrap it.
+        # See implementation_notes.md for more details.
+        model = self._wrap_for_mp(self.sampling_model)
+        replay_buffer = self._wrap_for_mp(self.replay_buffer)
+
+        if self.cfg.replay.use:
+            # None is fine for either value, it will be replaced by num_from_policy, but 0 is not
+            assert self.cfg.replay.num_from_replay != 0, "Replay is enabled but no samples are being drawn from it"
+            assert self.cfg.replay.num_new_samples != 0, "Replay is enabled but no new samples are being added to it"
+
+        n_drawn = self.cfg.algo.num_from_policy
+        n_replayed = self.cfg.replay.num_from_replay or n_drawn if self.cfg.replay.use else 0
+        n_new_replay_samples = self.cfg.replay.num_new_samples or n_drawn if self.cfg.replay.use else None
+        n_from_dataset = self.cfg.algo.num_from_dataset
+
+        src = DataSource(self.cfg, self.ctx, self.algo, self.task, replay_buffer=replay_buffer)
+        if n_from_dataset:
+            src.do_sample_dataset(self.training_data, n_from_dataset, backwards_model=model)
+        if n_drawn:
+            src.do_sample_model(model, n_drawn, n_new_replay_samples)
+        if n_replayed and replay_buffer is not None:
+            src.do_sample_replay(n_replayed)
+        if self.cfg.log_dir:
+            src.add_sampling_hook(SQLiteLogHook(str(pathlib.Path(self.cfg.log_dir) / "train"), self.ctx))
+        for hook in self.sampling_hooks:
+            src.add_sampling_hook(hook)
+        return self._make_data_loader(src)
 
     def build_validation_data_loader(self) -> DataLoader:
-        model, dev = self._wrap_for_mp(self.model, send_to_device=True)
-        iterator = SamplingIterator(
-            self.test_data,
-            model,
-            self.ctx,
-            self.algo,
-            self.task,
-            dev,
-            batch_size=self.cfg.algo.global_batch_size,
-            illegal_action_logreward=self.cfg.algo.illegal_action_logreward,
-            ratio=self.cfg.algo.valid_offline_ratio,
-            log_dir=str(pathlib.Path(self.cfg.log_dir) / "valid"),
-            sample_cond_info=self.cfg.cond.valid_sample_cond_info,
-            stream=False,
-            random_action_prob=self.cfg.algo.valid_random_action_prob,
-        )
+        model = self._wrap_for_mp(self.model)
+        # TODO: we're changing the default, make sure anything that is using test data is adjusted
+        src = DataSource(self.cfg, self.ctx, self.algo, self.task, is_algo_eval=True)
+        n_drawn = self.cfg.algo.valid_num_from_policy
+        n_from_dataset = self.cfg.algo.valid_num_from_dataset
+
+        src = DataSource(self.cfg, self.ctx, self.algo, self.task, is_algo_eval=True)
+        if n_from_dataset:
+            src.do_dataset_in_order(self.test_data, n_from_dataset, backwards_model=model)
+        if n_drawn:
+            assert self.cfg.num_validation_gen_steps is not None
+            # TODO: might be better to change total steps to total trajectories drawn
+            src.do_sample_model_n_times(model, n_drawn, num_total=self.cfg.num_validation_gen_steps * n_drawn)
+
+        if self.cfg.log_dir:
+            src.add_sampling_hook(SQLiteLogHook(str(pathlib.Path(self.cfg.log_dir) / "valid"), self.ctx))
         for hook in self.valid_sampling_hooks:
-            iterator.add_log_hook(hook)
-        return DataLoader(
-            iterator,
-            batch_size=None,
-            num_workers=self.cfg.num_workers,
-            persistent_workers=self.cfg.num_workers > 0,
-            prefetch_factor=1 if self.cfg.num_workers else None,
-        )
+            src.add_sampling_hook(hook)
+        return self._make_data_loader(src)
 
     def build_final_data_loader(self) -> DataLoader:
-        model, dev = self._wrap_for_mp(self.sampling_model, send_to_device=True)
-        iterator = SamplingIterator(
-            self.training_data,
-            model,
-            self.ctx,
-            self.algo,
-            self.task,
-            dev,
-            batch_size=self.cfg.algo.global_batch_size,
-            illegal_action_logreward=self.cfg.algo.illegal_action_logreward,
-            replay_buffer=None,
-            ratio=0.0,
-            log_dir=os.path.join(self.cfg.log_dir, "final"),
-            random_action_prob=0.0,
-            hindsight_ratio=0.0,
-            init_train_iter=self.cfg.num_training_steps,
-        )
+        model = self._wrap_for_mp(self.model)
+
+        n_drawn = self.cfg.algo.num_from_policy
+        src = DataSource(self.cfg, self.ctx, self.algo, self.task, is_algo_eval=True)
+        assert self.cfg.num_final_gen_steps is not None
+        # TODO: might be better to change total steps to total trajectories drawn
+        src.do_sample_model_n_times(model, n_drawn, num_total=self.cfg.num_final_gen_steps * n_drawn)
+
+        if self.cfg.log_dir:
+            src.add_sampling_hook(SQLiteLogHook(str(pathlib.Path(self.cfg.log_dir) / "final"), self.ctx))
         for hook in self.sampling_hooks:
-            iterator.add_log_hook(hook)
-        return DataLoader(
-            iterator,
-            batch_size=None,
-            num_workers=self.cfg.num_workers,
-            persistent_workers=self.cfg.num_workers > 0,
-            prefetch_factor=1 if self.cfg.num_workers else None,
-        )
+            src.add_sampling_hook(hook)
+        return self._make_data_loader(src)
 
     def train_batch(self, batch: gd.Batch, epoch_idx: int, batch_idx: int, train_it: int) -> Dict[str, Any]:
         tick = time.time()
@@ -315,7 +223,7 @@ class GFNTrainer:
             if not torch.isfinite(loss):
                 raise ValueError("loss is not finite")
             step_info = self.step(loss)
-            self.algo.step()
+            self.algo.step()  # This also isn't used anywhere?
             if self._validate_parameters and not all([torch.isfinite(i).all() for i in self.model.parameters()]):
                 raise ValueError("parameters are not finite")
         except ValueError as e:
@@ -330,7 +238,6 @@ class GFNTrainer:
         info["train_time"] = time.time() - tick
         return {k: v.item() if hasattr(v, "item") else v for k, v in info.items()}
 
-    @torch.no_grad()
     def evaluate_batch(self, batch: gd.Batch, epoch_idx: int = 0, batch_idx: int = 0) -> Dict[str, Any]:
         tick = time.time()
         self.model.eval()
@@ -365,7 +272,7 @@ class GFNTrainer:
             # the memory fragmentation or allocation keeps growing, how often should we clean up?
             # is changing the allocation strategy helpful?
 
-            if it % 64 == 0:
+            if it % 1024 == 0:
                 gc.collect()
                 torch.cuda.empty_cache()
             epoch_idx = it // epoch_length
@@ -412,7 +319,7 @@ class GFNTrainer:
                             v = v.item()
                         final_info[k].append(v)
                 if it % self.print_every == 0:
-                    logger.info(f"Generating mols {it - num_training_steps}/{num_final_gen_steps}")
+                    logger.info(f"Generating objs {it - num_training_steps}/{num_final_gen_steps}")
             final_info = {k: np.mean(v) for k, v in final_info.items()}
 
             logger.info("Final generation steps completed - " + " ".join(f"{k}:{v:.2f}" for k, v in final_info.items()))
@@ -425,6 +332,10 @@ class GFNTrainer:
             del final_dl
 
     def terminate(self):
+        logger = logging.getLogger("logger")
+        for handler in logger.handlers:
+            handler.close()
+
         for hook in self.sampling_hooks:
             if hasattr(hook, "terminate") and hook.terminate not in self.to_terminate:
                 hook.terminate()
@@ -455,7 +366,7 @@ class GFNTrainer:
         for k, v in info.items():
             self._summary_writer.add_scalar(f"{key}_{k}", v, index)
         if wandb.run is not None:
-            wandb.log({f"{key}/{k}": v for k, v in info.items()}, step=index)
+            wandb.log({f"{key}_{k}": v for k, v in info.items()}, step=index)
 
     def __del__(self):
         self.terminate()

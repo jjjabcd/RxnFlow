@@ -1,12 +1,15 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+
+from gflownet.utils.misc import StrictDataClass
 
 
 @dataclass
-class GraphTransformerConfig:
+class GraphTransformerConfig(StrictDataClass):
     num_heads: int = 2
     ln_type: str = "pre"
     num_mlp_layers: int = 0
+    concat_heads: bool = True
 
 
 class SeqPosEnc(int, Enum):
@@ -15,13 +18,13 @@ class SeqPosEnc(int, Enum):
 
 
 @dataclass
-class SeqTransformerConfig:
+class SeqTransformerConfig(StrictDataClass):
     num_heads: int = 2
     posenc: SeqPosEnc = SeqPosEnc.Rotary
 
 
 @dataclass
-class ModelConfig:
+class ModelConfig(StrictDataClass):
     """Generic configuration for models
 
     Attributes
@@ -35,9 +38,5 @@ class ModelConfig:
     num_layers: int = 3
     num_emb: int = 128
     dropout: float = 0
-    fp_radius_building_block: int = 2
-    fp_nbits_building_block: int = 1024
-    num_layers_building_block: int = 0
-    num_emb_building_block: int = 64
-    graph_transformer: GraphTransformerConfig = GraphTransformerConfig()
-    seq_transformer: SeqTransformerConfig = SeqTransformerConfig()
+    graph_transformer: GraphTransformerConfig = field(default_factory=GraphTransformerConfig)
+    seq_transformer: SeqTransformerConfig = field(default_factory=SeqTransformerConfig)

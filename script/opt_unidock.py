@@ -25,6 +25,8 @@ def parse_args():
         default=0.01,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.01)",
     )
+    run_cfg.add_argument("--wandb", type=str, help="wandb job name")
+    run_cfg.add_argument("--debug", action="store_true", help="For debugging option")
     return parser.parse_args()
 
 
@@ -39,21 +41,32 @@ def get_center(ligand_path: str) -> tuple[float, float, float]:
 
 
 def run(args):
-    from gflownet.tasks.unidock_moo_synthesis import UniDockMOOSynthesisTrainer
-    from gflownet.config import Config, init_empty
+    from rxnflow.tasks.unidock import UniDockMOOTrainer
+    from rxnflow.config import Config, init_empty
 
     config = init_empty(Config())
-    config.desc = "Vina-QED optimization with UniDock"
     config.env_dir = args.env_dir
     config.task.docking.protein_path = args.protein
     config.task.docking.center = tuple(args.center)
     config.num_training_steps = args.num_oracles
-    config.algo.action_sampling.sampling_ratio_reactbi = args.subsampling_ratio
-    config.cond.temperature.dist_params = [16, 64]  # Different to Paper!
+    config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
     config.log_dir = args.out_dir
     config.print_every = 1
-    trainer = UniDockMOOSynthesisTrainer(config)
-    trainer.run()
+    if args.debug:
+        config.overwrite_existing_exp = True
+
+    trainer = UniDockMOOTrainer(config)
+
+    if args.wandb is not None:
+        import wandb
+        from omegaconf import OmegaConf
+
+        wandb.init(project="rxnflow_unidock", name=args.wandb)
+        wandb.config.update({"config": OmegaConf.to_container(trainer.cfg)})
+        trainer.run()
+        wandb.finish()
+    else:
+        trainer.run()
 
 
 if __name__ == "__main__":
