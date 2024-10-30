@@ -33,8 +33,11 @@ class RxnFlow_PocketConditional(RxnFlow):
             self.pocket_embed = pocket_embed
         return self.pocket_embed
 
+    def clear_cache(self):
+        self.pocket_embed = None
 
-class RxnFlow_MP(RxnFlow_PocketConditional):
+
+class RxnFlow_MultiPocket(RxnFlow_PocketConditional):
     """
     Model which can be trained on multiple pocket conditions,
     For Zero-shot sampling
@@ -43,25 +46,24 @@ class RxnFlow_MP(RxnFlow_PocketConditional):
     def __init__(self, env_ctx: SynthesisEnvContext, cfg: Config, num_graph_out=1, do_bck=False):
         super().__init__(env_ctx, cfg, num_graph_out, do_bck)
 
-    def forward(self, g: gd.Batch, cond: torch.Tensor, batch_idx: torch.Tensor) -> tuple[RxnActionCategorical, Tensor]:
-        self.pocket_embed = self.get_pocket_embed()
-        cond_cat = torch.cat([cond, self.pocket_embed[batch_idx]], dim=-1)
+    def forward(self, g: gd.Batch, cond: torch.Tensor) -> tuple[RxnActionCategorical, Tensor]:
+        self.pocket_embed = self.get_pocket_embed(force=True)
+        cond_cat = torch.cat([cond, self.pocket_embed[g.sample_idx]], dim=-1)
         return super().forward(g, cond_cat)
 
-    def logZ(self, cond: torch.Tensor) -> torch.Tensor:
+    def logZ(self, cond_info: torch.Tensor) -> torch.Tensor:
         self.pocket_embed = self.get_pocket_embed()
-        cond_cat = torch.cat([cond, self.pocket_embed], dim=-1)
+        cond_cat = torch.cat([cond_info, self.pocket_embed], dim=-1)
         return self._logZ(cond_cat)
 
-    def clear_cache(self):
-        self.pocket_embed = None
 
-
-class RxnFlow_SP(RxnFlow_PocketConditional):
+class RxnFlow_SinglePocket(RxnFlow_PocketConditional):
     """
     Model which can be trained on single pocket conditions
     For Inference or Few-shot training
     """
+
+    # TODO: check its validity - I do not check whether it works yet
 
     def __init__(
         self,
@@ -83,24 +85,24 @@ class RxnFlow_SP(RxnFlow_PocketConditional):
                 param.requires_grad = False
 
         if freeze_action_embedding:
-            for param in self.block_mlp.parameters():
+            for param in self.mlp_block.parameters():
                 param.requires_grad = False
 
     def forward(self, g: gd.Batch, cond: Tensor) -> tuple[RxnActionCategorical, Tensor]:
         if self.freeze_pocket_embedding:
             self.pocket_encoder.eval()
         if self.freeze_action_embedding:
-            self.block_mlp.eval()
+            self.mlp_block.eval()
 
         self.pocket_embed = self.get_pocket_embed()
         pocket_embed = self.pocket_embed.view(1, -1).repeat(g.num_graphs, 1)
         cond_cat = torch.cat([cond, pocket_embed], dim=-1)
         return super().forward(g, cond_cat)
 
-    def logZ(self, cond: torch.Tensor) -> torch.Tensor:
+    def logZ(self, cond_info: torch.Tensor) -> torch.Tensor:
         self.pocket_embed = self.get_pocket_embed()
-        pocket_embed = self.pocket_embed.view(1, -1).repeat(cond.shape[0], 1)
-        cond_cat = torch.cat([cond, pocket_embed], dim=-1)
+        pocket_embed = self.pocket_embed.view(1, -1).repeat(cond_info.shape[0], 1)
+        cond_cat = torch.cat([cond_info, pocket_embed], dim=-1)
         return self._logZ(cond_cat)
 
     def get_pocket_embed(self, force: bool = False):
@@ -122,6 +124,10 @@ class RxnFlow_SP(RxnFlow_PocketConditional):
         if self.freeze_pocket_embedding:
             self.pocket_encoder.eval()
         if self.freeze_action_embedding:
-            self.block_mlp.eval()
+            self.mlp_block.eval()
 
         return self
+
+    def clear_cache(self, force=False):
+        if force or (not self.freeze_pocket_embedding):
+            self.pocket_embed = None

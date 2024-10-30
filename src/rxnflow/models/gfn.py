@@ -1,5 +1,3 @@
-from itertools import chain
-
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
@@ -10,7 +8,7 @@ from gflownet.algo.trajectory_balance import TrajectoryBalanceModel
 from gflownet.models.graph_transformer import GraphTransformer, mlp
 
 from rxnflow.config import Config
-from rxnflow.envs import SynthesisEnvContext, RxnActionType
+from rxnflow.envs import SynthesisEnvContext
 from rxnflow.policy.action_categorical import RxnActionCategorical
 
 
@@ -25,49 +23,56 @@ class RxnFlow(TrajectoryBalanceModel):
         do_bck=False,
     ) -> None:
         super().__init__()
-        self.num_bimolecular_rxns: int = env_ctx.num_bimolecular_rxns
+        assert do_bck is False
+        self.do_bck = do_bck
+
+        num_emb = cfg.model.num_emb
+        num_glob_final = num_emb * 2  # *2 for concatenating global mean pooling & node embeddings
+        num_mlp_layers = cfg.model.num_mlp_layers
+        num_emb_block = cfg.model.num_emb_block
+        num_mlp_layers_block = cfg.model.num_mlp_layers_block
 
         self.transf = GraphTransformer(
             x_dim=env_ctx.num_node_dim,
             e_dim=env_ctx.num_edge_dim,
             g_dim=env_ctx.num_cond_dim,
             num_emb=cfg.model.num_emb,
-            num_layers=cfg.model.num_layers,
+            num_layers=cfg.model.graph_transformer.num_layers,
             num_heads=cfg.model.graph_transformer.num_heads,
             ln_type=cfg.model.graph_transformer.ln_type,
         )
-
-        self.block_mlp = mlp(
+        # NOTE: Block embedding
+        self.mlp_block = mlp(
             env_ctx.num_block_features,
-            cfg.model.num_emb_building_block,
-            cfg.model.num_emb_building_block,
-            cfg.model.num_layers_building_block,
+            num_emb_block,
+            num_emb_block,
+            num_mlp_layers_block,
         )
 
-        num_emb = cfg.model.num_emb
-        num_emb_block = cfg.model.num_emb_building_block
-        num_glob_final = num_emb * 2  # *2 for concatenating global mean pooling & node embeddings
+        # NOTE: Markov Decision Process
+        self.emb_unirxn = nn.ParameterDict(
+            {p.name: nn.Parameter(torch.randn((num_glob_final,), requires_grad=True)) for p in env_ctx.unirxn_list}
+        )
+        self.emb_birxn = nn.ParameterDict(
+            {p.name: nn.Parameter(torch.randn((num_glob_final,), requires_grad=True)) for p in env_ctx.birxn_list}
+        )
 
-        self._action_type_to_num_inputs_outputs = {
-            RxnActionType.Stop: (num_glob_final, 1),
-            RxnActionType.AddFirstReactant: (num_glob_final + num_emb_block, 1),
-            RxnActionType.ReactUni: (num_glob_final, env_ctx.num_unimolecular_rxns),
-            RxnActionType.ReactBi: (num_glob_final + env_ctx.num_bimolecular_rxns * 2 + num_emb_block, 1),
-        }
+        self.mlp_stop = mlp(num_glob_final, num_emb, 1, num_mlp_layers)
+        self.mlp_firstblock = mlp(num_glob_final, num_emb, num_emb_block, num_mlp_layers)
+        self.mlp_unirxn = mlp(num_glob_final, num_emb, 1, num_mlp_layers)
+        self.mlp_birxn = mlp(num_glob_final, num_emb, num_emb_block, num_mlp_layers)
+        self.act = nn.LeakyReLU()
 
-        assert do_bck is False
-        self.do_bck = do_bck
-        mlps = {}
-        for atype in chain(env_ctx.action_type_order, env_ctx.bck_action_type_order if do_bck else []):
-            num_in, num_out = self._action_type_to_num_inputs_outputs[atype]
-            mlps[atype.cname] = mlp(num_in, num_emb, num_out, cfg.model.graph_transformer.num_mlp_layers)
-        self.mlps = nn.ModuleDict(mlps)
-
-        self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, cfg.model.graph_transformer.num_mlp_layers)
+        # NOTE: Etcs. (e.g., partition function)
+        self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, num_mlp_layers)
         self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
 
-    def _make_cat(self, g, emb, fwd):
-        return RxnActionCategorical(g, emb, model=self, fwd=fwd)
+    def logZ(self, cond_info: Tensor) -> Tensor:
+        return self._logZ(cond_info)
+
+    def _make_cat(self, g: gd.Batch, emb: Tensor) -> RxnActionCategorical:
+        action_masks = list(torch.unbind(g.protocol_mask, dim=1))  # [Ngraph, Nprotocol]
+        return RxnActionCategorical(g, emb, action_masks=action_masks, model=self)
 
     def forward(self, g: gd.Batch, cond: Tensor) -> tuple[RxnActionCategorical, Tensor]:
         """
@@ -85,7 +90,7 @@ class RxnFlow(TrajectoryBalanceModel):
         """
         _, emb = self.transf(g, cond)
         graph_out = self.emb2graph_out(emb)
-        fwd_cat = self._make_cat(g, emb, fwd=True)
+        fwd_cat = self._make_cat(g, emb)
 
         if self.do_bck:
             raise NotImplementedError
@@ -93,159 +98,81 @@ class RxnFlow(TrajectoryBalanceModel):
             return fwd_cat, bck_cat, graph_out
         return fwd_cat, graph_out
 
-    def logZ(self, cond: Tensor) -> Tensor:
-        return self._logZ(cond)
-
-    def block_embedding(self, block: Tensor) -> Tensor:
-        return self.block_mlp(block)
+    def block_embedding(self, block: Tensor):
+        return self.mlp_block(block)
 
     def hook_stop(self, emb: Tensor):
         """
-        The hook function to be called for the Stop action.
+        The hook function to be called for the Stop.
         Parameters
         emb : Tensor
-            The embedding tensor for the current state.
+            The embedding tensor for the current states.
+            shape: [Nstate, Fstate]
+        Returns
+        Tensor
+            The logits of the MLP.
+            shape: [Nstate, Nblock]
+        """
+        return self.mlp_stop(emb)
+
+    def hook_firstblock(self, emb: Tensor, block: Tensor):
+        """
+        The hook function to be called for the FirstBlock.
+        Parameters
+        emb : Tensor
+            The embedding tensor for the current states.
+            shape: [Nstate, Fstate]
+        block : Tensor
+            The building block features.
 
         Returns
         Tensor
-            The logits for Stop
+            The logits of the MLP.
+            shape: [Nstate, Nblock]
         """
+        state_emb = self.mlp_firstblock(emb)
+        block_emb = self.block_embedding(block)
+        return state_emb @ block_emb.T
 
-        return self.mlps[RxnActionType.Stop.cname](emb)
-
-    def hook_reactuni(self, emb: Tensor, mask: Tensor):
+    def hook_unirxn(self, emb: Tensor, protocol: str):
         """
-        The hook function to be called for the ReactUni action.
+        The hook function to be called for the UniRxn.
         Parameters
         emb : Tensor
-            The embedding tensor for the current state.
+            The embedding tensor for the current states.
+            shape: [Nstate, Fstate]
+        protocol: str
+            The name of protocol.
 
         Returns
         Tensor
-            The logits for ReactUni
+            The logits of the MLP.
+            shape: [Nstate, Nblock]
         """
+        return self.mlp_unirxn(self.act(emb + self.emb_unirxn[protocol].view(1, -1)))
 
-        logit = self.mlps[RxnActionType.ReactUni.cname](emb)
-        return logit.masked_fill(torch.logical_not(mask), -torch.inf)
-
-    def hook_reactbi(self, emb: Tensor, rxn_id: int, block_is_first: bool, block_emb: Tensor, mask: Tensor):
+    def hook_birxn(
+        self,
+        emb: Tensor,
+        block: Tensor,
+        protocol: str,
+    ):
         """
-        The hook function to be called for the ReactBi action.
+        The hook function to be called for the BiRxn.
         Parameters
         emb : Tensor
-            The embedding tensor for the current state.
-        rxn_id : int
-            The ID of the reaction selected by the sampler.
-        block_is_first : bool
-            The flag whether block is first reactant or second reactant of bimolecular reaction
-        block_emb : Tensor
-            The embedding tensor for building blocks.
+            The embedding tensor for the current states.
+            shape: [Nstate, Fstate]
+        block : Tensor
+            The building block features.
+        protocol: str
+            The name of protocol.
 
         Returns
         Tensor
-            The logits for (rxn_id, block_is_first).
+            The logits of the MLP.
+            shape: [Nstate, Nblock]
         """
-        N_graph = emb.size(0)
-        N_block = block_emb.size(0)
-        mlp = self.mlps[RxnActionType.ReactBi.cname]
-
-        # Convert `rxn_id` to a one-hot vector
-        rxn_features = torch.zeros(N_block, self.num_bimolecular_rxns * 2, device=emb.device)
-        rxn_features[:, rxn_id * 2 + int(block_is_first)] = 1
-
-        logits = torch.full((N_graph, N_block), -torch.inf, device=emb.device)
-        for i in range(N_graph):
-            if mask[i]:
-                _emb = emb[i].unsqueeze(0).repeat(N_block, 1)
-                expanded_input = torch.cat((_emb, block_emb, rxn_features), dim=-1)
-                logits[i] = mlp(expanded_input).squeeze(-1)
-        return logits
-
-    def hook_add_first_reactant(self, emb: Tensor, block_emb: Tensor):
-        """
-        The hook function to be called for the AddFirstReactant action.
-        Parameters
-        emb : Tensor
-            The embedding tensor for the current state.
-        block_emb : Tensor
-            The embedding tensor for building blocks.
-
-        Returns
-        Tensor
-            The logits or output of the MLP after being called with the expanded input.
-        """
-        N_graph = emb.size(0)
-        N_block = block_emb.size(0)
-        mlp = self.mlps[RxnActionType.AddFirstReactant.cname]
-
-        logits = torch.empty((N_graph, N_block), device=emb.device)
-        for i in range(N_graph):
-            _emb = emb[i].unsqueeze(0).repeat(N_block, 1)
-            expanded_input = torch.cat((_emb, block_emb), dim=-1)
-            logits[i] = mlp(expanded_input).squeeze(-1)
-        return logits
-
-    def single_hook_add_first_reactant(self, emb: Tensor, block_emb: Tensor):
-        """
-        The hook function to be called for the AddFirstReactant action.
-        Parameters
-        emb : Tensor
-            The embedding tensor for the a single current state.
-        block_emb : Tensor
-            The embedding tensor for a single building blocks
-
-        Returns
-        Tensor
-            The logits or output of the MLP after being called with the expanded input.
-        """
-        expanded_input = torch.cat((emb, block_emb), dim=-1)
-        return self.mlps[RxnActionType.AddFirstReactant.cname](expanded_input).squeeze(-1)
-
-    def single_hook_stop(self, emb: Tensor):
-        """
-        The hook function to be called for the Stop action.
-        Parameters
-        emb : Tensor
-            The embedding tensor for the current state.
-
-        Returns
-        Tensor
-            The logit for Stop
-        """
-        return self.mlps[RxnActionType.Stop.cname](emb).view(-1)
-
-    def single_hook_reactuni(self, emb: Tensor, rxn_id: Tensor):
-        """
-        The hook function to be called for the ReactUni action.
-        Parameters
-        emb : Tensor
-            The embedding tensor for the current state.
-
-        Returns
-        Tensor
-            The logit for (rxn_id)
-        """
-        return self.mlps[RxnActionType.ReactUni.cname](emb)[rxn_id]
-
-    def single_hook_reactbi(self, emb: Tensor, rxn_id: int, block_is_first: bool, block_emb: Tensor):
-        """
-        The hook function to be called for the ReactBi action.
-        Parameters
-        emb : Tensor
-            The embedding tensor for the current state.
-        rxn_id : int
-            The ID of the reaction selected by the sampler.
-        block_is_first : bool
-            The flag whether block is first reactant or second reactant of bimolecular reaction
-        block_emb : Tensor
-            The embedding tensor for a single building block.
-
-        Returns
-        Tensor
-            The logit for (rxn_id, block_is_first, block).
-        """
-        rxn_features = torch.zeros(self.num_bimolecular_rxns * 2, device=emb.device)
-        rxn_features[rxn_id * 2 + int(block_is_first)] = 1
-
-        expanded_input = torch.cat((emb, block_emb, rxn_features), dim=-1)
-        return self.mlps[RxnActionType.ReactBi.cname](expanded_input).view(-1)
+        state_emb = self.mlp_birxn(self.act(emb + self.emb_birxn[protocol].view(1, -1)))
+        block_emb = self.block_embedding(block)
+        return state_emb @ block_emb.T

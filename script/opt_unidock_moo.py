@@ -3,13 +3,13 @@ import wandb
 from omegaconf import OmegaConf
 
 from rxnflow.config import Config, init_empty
-from rxnflow.tasks.unidock import UniDockTrainer
+from rxnflow.tasks.unidock_moo import UniDockMOOTrainer
 from rxnflow.utils.misc import create_logger
 from utils import get_center
 
 
 def parse_args():
-    parser = ArgumentParser("RxnFlow", description="Vina optimization with GPU-accelerated UniDock")
+    parser = ArgumentParser("RxnFlow", description="Vina-QED multi-objective optimization with GPU-accelerated UniDock")
     opt_cfg = parser.add_argument_group("Protein Config")
     opt_cfg.add_argument("-p", "--protein", type=str, required=True, help="Protein PDB Path")
     opt_cfg.add_argument("-c", "--center", nargs="+", type=float, help="Pocket Center (--center X Y Z)")
@@ -29,9 +29,6 @@ def parse_args():
     )
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument(
-        "--filter", type=str, default="lipinski", help="Drug Filter", choices=["null", "lipinski", "veber"]
-    )
-    run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
         default=0.01,
@@ -46,7 +43,6 @@ def run(args):
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.task.docking.protein_path = args.protein
-    config.task.constraint.rule = args.filter
     config.task.docking.center = tuple(args.center)
     config.task.docking.size = tuple(args.size)
     config.num_training_steps = args.num_oracles
@@ -56,7 +52,7 @@ def run(args):
     if args.debug:
         config.overwrite_existing_exp = True
 
-    trainer = UniDockTrainer(config)
+    trainer = UniDockMOOTrainer(config)
     logger = create_logger()  # non-propagate version
 
     if args.wandb is not None:
@@ -75,9 +71,4 @@ if __name__ == "__main__":
         args.center = get_center(args.ref_ligand)
     else:
         assert len(args.center) == 3, "--center need three values: X Y Z"
-    if args.size is not None:
-        assert len(args.size) in [1, 3], "--center need one or three values: X Y Z"
-        if len(args.size) == 1:
-            v = args.size[0]
-            args.size = [v, v, v]
     run(args)

@@ -4,9 +4,14 @@ from pathlib import Path
 import time
 import gdown
 
+from rxnflow.config import Config, init_empty
+from rxnflow.tasks.multi_pocket import ProxySampler
+from utils import get_center
+
 
 DEFAULT_CKPT_LINK = "https://drive.google.com/uc?id=1uwvFbP0l_wNzb4riJ568Zouewhmuxvur"
 DEFAULT_CKPT_PATH = "./weights/rxnflow_crossdocked_qvina.pt"
+DEFAULT_CKPT_PATH = "./logs/sbdd-0204/model_state.pt"
 
 
 def parse_args():
@@ -19,7 +24,7 @@ def parse_args():
     run_cfg = parser.add_argument_group("Operation Config")
     run_cfg.add_argument("-n", "--num_samples", type=int, default=100, help="Number of Samples (default: 100)")
     run_cfg.add_argument("-o", "--out_path", type=str, required=True, help="Output Path (.csv | .smi)")
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/enamine_all", help="Environment Directory Path")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument("--model_path", type=str, help="Checkpoint Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
@@ -28,41 +33,31 @@ def parse_args():
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.01)",
     )
     run_cfg.add_argument("--cuda", action="store_true", help="CUDA Acceleration")
+    run_cfg.add_argument("--seed", type=int, help="seed", default=1)
     return parser.parse_args()
 
 
-def get_center(ligand_path: str) -> tuple[float, float, float]:
-    from openbabel import pybel
-    import numpy as np
-
-    extension = os.path.splitext(ligand_path)[-1][1:]
-    pbmol: pybel.Molecule = next(pybel.readfile(extension, ligand_path))
-    x, y, z = np.mean([atom.coords for atom in pbmol.atoms], axis=0).tolist()
-    return round(x, 3), round(y, 3), round(z, 3)
-
-
 def run(args):
-    from gflownet.config import Config, init_empty
-    from gflownet.tasks.sbdd_synthesis import SBDDSampler
-
     ckpt_path = Path(args.model_path)
 
     config = init_empty(Config())
+    config.seed = args.seed
     config.env_dir = args.env_dir
-    config.algo.global_batch_size = 100
-    config.algo.action_sampling.sampling_ratio_reactbi = args.subsampling_ratio
-    config.cond.temperature.dist_params = [32, 64]
+    config.algo.num_from_policy = 100
+    config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
+    config.task.docking.protein_path = args.protein
+    config.task.docking.center = args.center
 
     device = "cuda" if args.cuda else "cpu"
     save_reward = os.path.splitext(args.out_path)[1] == ".csv"
 
     # NOTE: Run
-    sampler = SBDDSampler(config, ckpt_path, device)
+    sampler = ProxySampler(config, ckpt_path, device)
+    sampler.update_temperature("uniform", [16, 64])
+
+    tick = time.time()
     sampler.set_pocket(args.protein, args.center)
-    if save_reward:  # Run Pharmacophore Modeling & Setup Proxy
-        tick = time.time()
-        sampler.task._update_proxy()
-        print(f"Pharmacophore Modeling: {time.time() - tick:.3f} sec")
+    print(f"Pharmacophore Modeling: {time.time() - tick:.3f} sec")
 
     tick = time.time()
     res = sampler.sample(args.num_samples, calc_reward=save_reward)

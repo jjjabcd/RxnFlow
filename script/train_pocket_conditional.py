@@ -1,4 +1,8 @@
 from argparse import ArgumentParser
+import wandb
+from omegaconf import OmegaConf
+from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
+from rxnflow.config import Config, init_empty
 
 
 def parse_args():
@@ -17,11 +21,11 @@ def parse_args():
         default=50000,
         help="Number of Oracles (64 molecules per oracle; default: 50000)",
     )
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/enamine_all", help="Environment Directory Path")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
-        default=0.01,
+        default=0.005,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.01)",
     )
     run_cfg.add_argument("--wandb", action="store_true", help="use wandb")
@@ -30,9 +34,6 @@ def parse_args():
 
 
 def run(args):
-    from rxnflow.tasks.multi_pocket import RxnFlowTrainer_MP
-    from rxnflow.config import Config, init_empty
-
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.task.pocket_conditional.pocket_db = args.db
@@ -43,16 +44,15 @@ def run(args):
     config.print_every = 10
     config.checkpoint_every = 1_000
     config.store_all_checkpoints = True
+    config.num_workers_retrosynthesis = 8
 
     if args.debug:
         config.overwrite_existing_exp = True
+        config.print_every = 1
 
-    trainer = RxnFlowTrainer_MP(config)
+    trainer = ProxyTrainer_MultiPocket(config)
 
     if args.wandb:
-        import wandb
-        from omegaconf import OmegaConf
-
         wandb.init()
         wandb.config.update({"config": OmegaConf.to_container(trainer.cfg)})
         trainer.run()

@@ -4,11 +4,13 @@
 
 # RxnFlow: Generative Flows on Synthetic Pathway for Drug Design
 
-Official implementation of ***Generative Flows on Synthetic Pathway for Drug Design*** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[arXiv](https://arxiv.org/abs/2410.04542)]
+<img src="image/overview.png" width=600>
+
+Official implementation of **_Generative Flows on Synthetic Pathway for Drug Design_** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[arXiv](https://arxiv.org/abs/2410.04542)]
 
 RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space.
 
-- RxnFlow can operate on large synthetic action spaces comprising 1.2M building blocks and 71 reaction templates without compute overhead
+- RxnFlow can operate on large synthetic action spaces comprising 1.2M building blocks and 117 reaction templates without compute overhead
 - RxnFlow can explore broader chemical space within less reaction steps, resulting in higher diversity, higher potency, and lower synthetic complexity of generated molecules.
 - RxnFlow can generate molecules with expanded or modified building block libaries without retraining.
 
@@ -21,46 +23,33 @@ This repository was developed for research. The code for real-world drug discove
 ### Install
 
 ```bash
-# python: 3.10
-conda install openbabel # For PharmacoNet
-pip install -e . --find-links https://data.pyg.org/whl/torch-2.3.1+cu121.html
+# python>=3.10,<3.13, torch>=2.3.1
+pip install -e . --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
 # For UniDock
-conda install openbabel unidock
-pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.3.1+cu121.html
+conda install unidock
+pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
+
+# For Pocket Conditional Generation
+pip install -e '.[pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 ```
 
-### Data
+### Data Preparation
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
+We provide two reaction template set:
 
-The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/templates/hb_edited.txt](data/template/hb_edited.txt).
+- We provide the 107-size reaction template set [templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
+- The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](data/template/hb_edited.txt).
 
-The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10.
-
-- Use Comprehensive Catalog
-
-  ```bash
-  cd data
-  # case1: single-step
-  python scripts/a_sdf_to_env.py -b <CATALOG_SDF> -d envs/enamine_all --cpu <CPU>
-  
-  # case2: two-step
-  python scripts/b1_sdf_to_smi.py -b <CATALOG_SDF> -o building_blocks/blocks.smi --cpu <CPU>
-  python scripts/b2_smi_to_env.py -b building_blocks/blocks.smi -d envs/enamine_all --cpu <CPU> --skip_sanitize
-  ```
-
-- Use custom SMILES file (`.smi`)
-
-  ```bash
-  python scripts/b2_smi_to_env.py -b <SMILES-FILE> -d ./envs/<ENV> --cpu <CPU>
-  ```
+To construct datas, please follow the process in [data/](data/).
 
 ## Experiments
 
-### Docking-QED multi-objective optimization with GPU-accelerated UniDock
+<details>
+<summary><h3 style="display:inline-block"> Docking optimization with GPU-accelerated UniDock</h3></summary>
 
-Multi-objective optimization ([Multi-objective GFlowNet](https://arxiv.org/abs/2210.12765)) for docking score and QED. This uses GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
+You can optimize the docking score with GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
 
 ```bash
 python script/opt_unidock.py -h
@@ -68,11 +57,29 @@ python script/opt_unidock.py \
   -p <Protein PDB path> \
   -c <Center X> <Center Y> <Center Z> \
   -l <Reference ligand, required if center is empty. > \
+  -s <Size X> <Size Y> <Size Z> \
+  -o <Output directory> \
+  -n <Num Oracles (default: 1000)> \
+  --filter <drugfilter; choice=(lipinski, veber, null); default: lipinski> \
+  --batch_size <Num generations per oracle; default: 64> \
+  --env_dir <Environment directory> \
+  --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.01>
+```
+
+You can also perform multi-objective optimization ([Multi-objective GFlowNet](https://arxiv.org/abs/2210.12765)) for docking score and QED.
+
+```bash
+python script/opt_unidock_moo.py -h
+python script/opt_unidock_moo.py \
+  -p <Protein PDB path> \
+  -c <Center X> <Center Y> <Center Z> \
+  -l <Reference ligand, required if center is empty. > \
+  -s <Size X> <Size Y> <Size Z> \
   -o <Output directory> \
   -n <Num Oracles (default: 1000)> \
   --batch_size <Num generations per oracle; default: 64> \
   --env_dir <Environment directory> \
-  --subsample_ratio <Subsample ratio; memory-variance trade-off; default: 0.01>
+  --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.01>
 ```
 
 **Example (KRAS G12C mutation)**
@@ -80,32 +87,48 @@ python script/opt_unidock.py \
 - Use center coordinates
 
   ```bash
-  python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras
+  python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
   ```
 
 - Use center of the reference ligand
 
   ```bash
-  python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
+  python script/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
   ```
 
-### Zero-shot sampling with Pharmacophore-based QuickVina Proxy
+</details>
+
+<details>
+<summary><h3 style="display:inline-block"> Zero-shot sampling with Pharmacophore-based QuickVina Proxy</h3></summary>
 
 Sample high-affinity molecules. The QuickVina docking score is estimated by Proxy Model [[github](https://github.com/SeonghwanSeo/PharmacoNet/tree/main/src/pmnet_appl)].
+To create dataset, please refer [data/](./data/)
 
-```bash
-python script/sampling_zeroshot.py -h
-python script/sampling_zeroshot.py \
-  -p <Protein PDB path> \
-  -c <Center X> <Center Y> <Center Z> \
-  -l <Reference ligand, required if center is empty. > \
-  -o <Output path: `smi|csv`> \
-  -n <Num samples (default: 100)> \
-  --env_dir <Environment directory> \
-  --model_path <Checkpoint path; default: None (auto-downloaded)> \
-  --subsample_ratio <Subsample ratio; memory-variance trade-off; default: 0.01> \
-  --cuda
-```
+The trained model will be updated soon.
+
+- Training
+
+  ```bash
+  python script/train_pocket_conditional.py -h
+  python script/train_pocket_conditional.py \
+    --env_dir <Environment directory> \
+    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.01> \
+  ```
+
+- Sampling
+  ```bash
+  python script/sampling_zeroshot.py -h
+  python script/sampling_zeroshot.py \
+    -p <Protein PDB path> \
+    -c <Center X> <Center Y> <Center Z> \
+    -l <Reference ligand, required if center is empty. > \
+    -o <Output path: `smi|csv`> \
+    -n <Num samples (default: 100)> \
+    --env_dir <Environment directory> \
+    --model_path <Checkpoint path; default: None (auto-downloaded)> \
+    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.01> \
+    --cuda
+  ```
 
 **Example (KRAS G12C mutation)**
 
@@ -121,36 +144,80 @@ python script/sampling_zeroshot.py \
   python script/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
   ```
 
-### Custom optimization
+</details>
 
-If you want to train RxnFlow with your custom reward function, you can use the base classes from  `gflownet.base`. The reward should be **Non-negative**.
+<details>
+<summary><h3 style="display:inline-block">Custom optimization</h3></summary>
+
+If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
+
+Example codes are provided in `./examples/`.
 
 - Example (QED)
 
   ```python
   import torch
-  from gflownet.base import SynthesisTrainer, SynthesisGFNSampler, BaseTask
-  from gflownet.trainer import FlatRewards
-  from rdkit.Chem import Mol as RDMol, QED
-  
+  from rdkit.Chem import Mol, QED
+  from gflownet import ObjectProperties
+  from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
+
   class QEDTask(BaseTask):
-      def compute_flat_rewards(self, mols: list[RDMol], batch_idx: list[int]) -> tuple[FlatRewards, torch.Tensor]:
-          fr = torch.tensor([QED.qed(mol) for mol in mols], dtype=torch.float).reshape(-1, 1)
+      def compute_obj_properties(self, objs: list[Chem.Mol]) -> tuple[ObjectProperties, torch.Tensor]:
+          fr = torch.tensor([QED.qed(mol) for mol in mols], dtype=torch.float)
+          fr = fr.reshape(-1, 1) # reward dimension should be [Nobj, Nprop]
           is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
-          return FlatRewards(fr), is_valid_t
-  
-  class QEDSynthesisTrainer(SynthesisTrainer): # For online training
+          return ObjectProperties(fr), is_valid_t
+
+  class QEDTrainer(RxnFlowTrainer):  # For online training
       def setup_task(self):
-          self.task: QEDTask = QEDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
-  
-  class QEDSynthesisSampler(SynthesisGFNSampler): # Sampling with pre-trained GFlowNet
+          self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+
+  class QEDSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
       def setup_task(self):
-          self.task: QEDTask = QEDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
+          self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
   ```
 
-### Reproducing experimental results
+- Example (Multi-objective optimization)
+  The example scripts will be provided soon!
 
-Current version do not provide the reproducing code. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive). 
+  ```python
+  import torch
+  from rdkit.Chem import Mol as RDMol
+  from gflownet import ObjectProperties
+  from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
+
+  class MOOTask(BaseTask):
+      is_moo=True
+      def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, torch.Tensor]:
+          fr1 = torch.tensor([reward1(mol) for mol in mols], dtype=torch.float)
+          fr2 = torch.tensor([reward2(mol) for mol in mols], dtype=torch.float)
+          fr = torch.stack([fr1, fr2], dim=-1)
+          is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
+          return ObjectProperties(fr), is_valid_t
+
+  class MOOTrainer(RxnFlowTrainer):  # For online training
+      def set_default_hps(self, base: Config):
+          super().set_default_hps(base)
+          base.task.moo.objectives = ["obj1", "obj2"] # set the objective names
+
+      def setup_task(self):
+          self.task = MOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+
+  class MOOSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
+      def setup_task(self):
+          self.task = MOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+  ```
+
+</details>
+
+<details>
+<summary><h3 style="display:inline-block">Reproducing experimental results</h3></summary>
+
+The training/sampling scripts are provided in `experiments/`.
+
+**_NOTE_**: Current version do not fully reproduce the paper result. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
+
+</details>
 
 ## Citation
 
@@ -162,23 +229,6 @@ If you use our code in your research, we kindly ask that you consider citing our
   author={Seo, Seonghwan and Kim, Minsu and Shen, Tony and Ester, Martin and Park, Jinkyoo and Ahn, Sungsoo and Kim, Woo Youn},
   journal={arXiv preprint arXiv:2410.04542},
   year={2024}
-}
-@article{shen2024tacogfn,
-  title={TacoGFN: Target Conditioned GFlowNet for Structure-Based Drug Design},
-  author={Shen, Tony and Seo, Seonghwan and Lee, Grayson and Pandey, Mohit and Smith, Jason R and Cherkasov, Artem and Kim, Woo Youn and Ester, Martin},
-  journal={arXiv preprint arXiv:2310.03223},
-  year={2024}
-  note={Published at Transactions on Machine Learning Research(TMLR)}
-}
-@article{seo2023molecular,
-  title={Molecular generative model via retrosynthetically prepared chemical building block assembly},
-  author={Seo, Seonghwan and Lim, Jaechang and Kim, Woo Youn},
-  journal={Advanced Science},
-  volume={10},
-  number={8},
-  pages={2206674},
-  year={2023},
-  publisher={Wiley Online Library}
 }
 
 ```

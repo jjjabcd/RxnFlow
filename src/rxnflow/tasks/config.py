@@ -46,7 +46,7 @@ class PocketConditionalConfig:
 
 @dataclass
 class DockingTaskConfig:
-    """Config for SBDDConfig
+    """Config for Docking
 
     Attributes
     ----------
@@ -54,14 +54,34 @@ class DockingTaskConfig:
         Protein Path
     center: tuple[float, float, float]
         Pocket Center
+    size: tuple[float, float, float]
+        Pocket Box Size
     """
 
     protein_path: str = MISSING
     center: tuple[float, float, float] = MISSING
+    size: tuple[float, float, float] = (22.5, 22.5, 22.5)  # unidock default
+
+
+@dataclass
+class DrugFilter:
+    """Config for SBDDConfig
+
+    Attributes
+    ----------
+    rule: str (path)
+        DrugFilter Rule
+            - None
+            - lipinski
+            - veber
+    """
+
+    rule: str | None = None
 
 
 @dataclass
 class TasksConfig:
-    moo: MOOTaskConfig = MOOTaskConfig()
-    pocket_conditional: PocketConditionalConfig = PocketConditionalConfig()
-    docking: DockingTaskConfig = DockingTaskConfig()
+    moo: MOOTaskConfig = field(default_factory=MOOTaskConfig)
+    pocket_conditional: PocketConditionalConfig = field(default_factory=PocketConditionalConfig)
+    constraint: DrugFilter = field(default_factory=DrugFilter)
+    docking: DockingTaskConfig = field(default_factory=DockingTaskConfig)

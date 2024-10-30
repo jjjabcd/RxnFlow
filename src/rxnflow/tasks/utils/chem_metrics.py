@@ -1,4 +1,3 @@
-from pathlib import Path
 import numpy as np
 import torch
 
@@ -8,7 +7,6 @@ from rdkit.Chem import QED
 from rdkit.Chem import Mol as RDMol
 
 from gflownet.utils import sascore
-from .unidock import unidock_scores
 
 
 def compute_diverse_top_k(
@@ -64,14 +62,3 @@ def mol2sascore(mols: list[RDMol], default=10):
 
 def mol2qed(mols: list[RDMol], default=0):
     return torch.tensor([safe(QED.qed, mol, default) for mol in mols])
-
-
-def mol2vina(
-    mols: list[RDMol],
-    protein_path: str,
-    center: tuple[float, float, float],
-    search_mode: str = "balance",
-    out_dir: Path | str | None = None,
-):
-    vina_score = unidock_scores(mols, protein_path, center, search_mode=search_mode, out_dir=out_dir)
-    return torch.tensor(vina_score, dtype=torch.float).clip(max=0.0)
