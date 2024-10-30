@@ -154,15 +154,33 @@ Current version do not provide the reproducing code. Please switch to [tag: pape
 
 ## Citation
 
-If you use this code in your research, please cite:
+If you use our code in your research, we kindly ask that you consider citing our work in papers:
 
-```
-@article{seo2024rxnflow,
-      title={Generative Flows on Synthetic Pathway for Drug Design}, 
-      author={Seonghwan Seo and Minsu Kim and Tony Shen and Martin Ester and Jinkyoo Park and Sungsoo Ahn and Woo Youn Kim},
-      journal={arXiv preprint arXiv:2410.04542},
-      year={2024},
+```bibtex
+@article{seo2024generative,
+  title={Generative Flows on Synthetic Pathway for Drug Design},
+  author={Seo, Seonghwan and Kim, Minsu and Shen, Tony and Ester, Martin and Park, Jinkyoo and Ahn, Sungsoo and Kim, Woo Youn},
+  journal={arXiv preprint arXiv:2410.04542},
+  year={2024}
 }
+@article{shen2024tacogfn,
+  title={TacoGFN: Target Conditioned GFlowNet for Structure-Based Drug Design},
+  author={Shen, Tony and Seo, Seonghwan and Lee, Grayson and Pandey, Mohit and Smith, Jason R and Cherkasov, Artem and Kim, Woo Youn and Ester, Martin},
+  journal={arXiv preprint arXiv:2310.03223},
+  year={2024}
+  note={Published at Transactions on Machine Learning Research(TMLR)}
+}
+@article{seo2023molecular,
+  title={Molecular generative model via retrosynthetically prepared chemical building block assembly},
+  author={Seo, Seonghwan and Lim, Jaechang and Kim, Woo Youn},
+  journal={Advanced Science},
+  volume={10},
+  number={8},
+  pages={2206674},
+  year={2023},
+  publisher={Wiley Online Library}
+}
+
 ```
 
 ## Related Works
