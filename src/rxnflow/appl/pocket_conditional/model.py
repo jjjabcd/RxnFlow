@@ -1,16 +1,16 @@
 import torch
 import torch_geometric.data as gd
-from torch import Tensor
+from torch import Tensor, nn
 
 from gflownet.utils.misc import get_worker_device
 from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnvContext
-from rxnflow.policy import RxnActionCategorical
 from rxnflow.models.gfn import RxnFlow
+from rxnflow.policy import RxnActionCategorical
 from rxnflow.utils.misc import get_worker_env
 
-from .utils import PocketDB
 from .pocket.gvp import GVP_embedding
+from .utils import PocketDB
 
 
 class RxnFlow_PocketConditional(RxnFlow):
@@ -22,6 +22,7 @@ class RxnFlow_PocketConditional(RxnFlow):
         env_ctx.num_cond_dim = org_num_cond_dim
 
         self.pocket_encoder = GVP_embedding((6, 3), (pocket_dim, 16), (32, 1), (32, 1), seq_in=True, vocab_size=20)
+        self.pocket_norm = nn.LayerNorm(pocket_dim)
         self.pocket_embed: torch.Tensor | None = None
 
     def get_pocket_embed(self, force: bool = False):
@@ -30,7 +31,7 @@ class RxnFlow_PocketConditional(RxnFlow):
             task = get_worker_env("task")
             pocket_db: PocketDB = task.pocket_db
             _, pocket_embed = self.pocket_encoder.forward(pocket_db.batch_g.to(dev))
-            self.pocket_embed = pocket_embed
+            self.pocket_embed = self.pocket_norm(pocket_embed)
         return self.pocket_embed
 
     def clear_cache(self):
@@ -85,14 +86,14 @@ class RxnFlow_SinglePocket(RxnFlow_PocketConditional):
                 param.requires_grad = False
 
         if freeze_action_embedding:
-            for param in self.mlp_block.parameters():
+            for param in self.emb_block.parameters():
                 param.requires_grad = False
 
     def forward(self, g: gd.Batch, cond: Tensor) -> tuple[RxnActionCategorical, Tensor]:
         if self.freeze_pocket_embedding:
             self.pocket_encoder.eval()
         if self.freeze_action_embedding:
-            self.mlp_block.eval()
+            self.emb_block.eval()
 
         self.pocket_embed = self.get_pocket_embed()
         pocket_embed = self.pocket_embed.view(1, -1).repeat(g.num_graphs, 1)
@@ -112,7 +113,7 @@ class RxnFlow_SinglePocket(RxnFlow_PocketConditional):
         else:
             return super().get_pocket_embed(force)
 
-    def block_embedding(self, block: Tensor):
+    def block_embedding(self, block: tuple[Tensor, Tensor]) -> Tensor:
         if self.freeze_action_embedding:
             with torch.no_grad():
                 return super().block_embedding(block)
@@ -124,7 +125,7 @@ class RxnFlow_SinglePocket(RxnFlow_PocketConditional):
         if self.freeze_pocket_embedding:
             self.pocket_encoder.eval()
         if self.freeze_action_embedding:
-            self.mlp_block.eval()
+            self.emb_block.eval()
 
         return self
 

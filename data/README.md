@@ -1,43 +1,65 @@
 # Data processing
 
+All data used in the paper except for Enamine building block library can be accessed in [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
+
 ## Library Processing
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
-We provide two reaction template set:
 
-- We provide the 107-size reaction template set [templates/real.txt](templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
+### Reaction Template
+
+We provide the two reaction template sets:
+
+- We provide the 109-size reaction template set [templates/real.txt](templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
 - The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](template/hb_edited.txt).
 
-The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog).
-We used the "Comprehensive Catalog" released at 2024.06.10.
+### Building Block Library
+
+We support two building block libraries.
+
+- **ZINCFrag:** For reproducible benchmark study, we propose a new public building block library, which is a subset of ZINC22 fragment set. All fragments are included in AiZynthFinder's built-in ZINC stock.
+- **Enamine:** We support the Enamine building block library, which is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10 in the paper.
 
 1. Refine Building Blocks
 
 ```bash
+# ZINCFrag (200k building blocks)
+cd building_blocks
+gdown 16N8Xyxr9a-CifjIofgdH3ssFukC4Eh_V # if it fails, gdown --id 16N8Xyxr9a-CifjIofgdH3ssFukC4Eh_V
+
 # Enamine Comprehensive Catalog
-python scripts/a_enamine_catalog_to_smi.py -b `CATALOG_SDF` -o envs/enamine_catalog.smi --cpu `CPU`
+python scripts/a_enamine_catalog_to_smi.py -b `CATALOG_SDF` -o building_blocks/enamine_catalog.smi --cpu `CPU`
 
 # Enamine Stock
-python scripts/a_enamine_stock_to_smi.py -b `STOCK_SDF` -o envs/enamine_stock.smi --cpu `CPU`
+python scripts/a_enamine_stock_to_smi.py -b `STOCK_SDF` -o building_blocks/enamine_stock.smi --cpu `CPU`
 
 # Custom smiles
-python scripts/a_refine_smi.py -b `CUSTOM_SMI` -o envs/custom_block.smi --cpu `CPU`
+python scripts/a_refine_smi.py -b `CUSTOM_SMI` -o building_blocks/custom_block.smi --cpu `CPU`
 ```
 
 2. Create Environment
 
 ```bash
 python scripts/b_create_env.py -b `SMI-FILE` -o ./envs/`ENV` -t ./templates/real.txt --cpu `CPU`
+
+# ZINCFrag-10k (for debugging)
+python scripts/b_create_env.py -b ./building_blocks/zincfrag_10k.smi.gz -o ./envs/zincfrag-debug --cpu `CPU`
+
+# ZINCFrag
+python scripts/b_create_env.py -b ./building_blocks/zincfrag.smi.gz -o ./envs/zincfrag --cpu `CPU`
+
+# Enamine Comprehensive Catalog
+python scripts/b_create_env.py -b ./building_blocks/enamine_catalog.smi -o envs/catalog --cpu `CPU`
 ```
 
 ## Experimental Dataset
 
-All data used in the paper can be accessed in [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
-Place data at `experiments/`.
+You can download files from [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
+Place them at `experiments/`.
 
 ### LIT-PCBA optimization
 
-From https://drugdesign.unistra.fr/LIT-PCBA/
+From <https://drugdesign.unistra.fr/LIT-PCBA/>
 
 | Target     | PDB ID | Center                |
 | ---------- | ------ | --------------------- |
@@ -61,7 +83,7 @@ From https://drugdesign.unistra.fr/LIT-PCBA/
 
 ### SBDD optimization (zero-shot sampling with pocket-conditioning)
 
-From https://github.com/gnina/models/tree/master/data/CrossDocked2020
+From <https://github.com/gnina/models/tree/master/data/CrossDocked2020>
 
 (15,201 training pockets + 100 test pockets.)
 

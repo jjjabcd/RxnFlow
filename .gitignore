@@ -5,10 +5,14 @@ data/experiments/
 logs/
 weights/
 wandb*
-slurm-*
 *.pdbqt
+slurm*
+**/job.sh
 **/result/
-**/unidock_*
+**/unidock_20*
+typings/
+job*
+**/*benchmark*
 
 # UV
 uv.lock

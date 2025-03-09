@@ -1,16 +1,16 @@
 import torch
 import torch.nn as nn
-
-from collections.abc import Callable
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
-from gflownet import ObjectProperties, LogScalar, GFNTask
+from gflownet import GFNTask, LogScalar, ObjectProperties
 from gflownet.utils import metrics
-from gflownet.utils.conditioning import TemperatureConditional
+from gflownet.utils.conditioning import (
+    FocusRegionConditional,
+    MultiObjectiveWeightedPreferences,
+    TemperatureConditional,
+)
 from gflownet.utils.transforms import to_logreward
-from gflownet.utils.conditioning import FocusRegionConditional, MultiObjectiveWeightedPreferences
-
 from rxnflow.config import Config
 
 
@@ -19,20 +19,16 @@ class BaseTask(GFNTask):
 
     is_moo: bool = False
 
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        self._wrap_model: Callable[[nn.Module], nn.Module] = wrap_model
+    def __init__(self, cfg: Config):
         self.cfg: Config = cfg
-        self.models: dict[str, nn.Module] = self._load_task_models()
         self.temperature_conditional: TemperatureConditional = TemperatureConditional(cfg)
         self.num_cond_dim: int = self.temperature_conditional.encoding_size()
         if self.is_moo:
             self.setup_moo()
 
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        """we only generate rdkit molecules -> rename objs to mols"""
         raise NotImplementedError
-
-    def _load_task_models(self) -> dict[str, nn.Module]:
-        return {}
 
     def setup_moo(self):
         mcfg = self.cfg.task.moo

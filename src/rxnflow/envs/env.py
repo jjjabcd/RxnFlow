@@ -1,14 +1,16 @@
 from functools import cached_property
 from pathlib import Path
+
 import numpy as np
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Mol as RDMol
 
 from gflownet.envs.graph_building_env import Graph, GraphBuildingEnv
+
+from .action import Protocol, RxnAction, RxnActionType
 from .reaction import BiReaction, Reaction, UniReaction
-from .action import RxnAction, RxnActionType, Protocol
-from .retrosynthesis import RetroSyntheticAnalyzer
+from .retrosynthesis import MultiRetroSyntheticAnalyzer
 
 logger = RDLogger.logger()
 RDLogger.DisableLog("rdApp.*")
@@ -45,7 +47,16 @@ class SynthesisEnv(GraphBuildingEnv):
     having the agent select a reaction template. Masks ensure that only valid templates are selected.
     """
 
-    def __init__(self, env_dir: str | Path):
+    def __init__(self, env_dir: str | Path, num_workers: int = 4):
+        """Environment for Synthesis-oriented generation
+
+        Parameters
+        ----------
+        env_dir : str | Path
+            root directory of synthesis environment
+        num_workers : int
+            number of workers for retrosynthetic analysis
+        """
         """A reaction template and building block environment instance"""
         self.env_dir = env_dir = Path(env_dir)
         reaction_template_path = env_dir / "template.txt"
@@ -86,7 +97,7 @@ class SynthesisEnv(GraphBuildingEnv):
 
         # set precomputed building block feature
         self.block_fp = np.load(pre_computed_building_block_fp_path)
-        self.block_desc = np.load(pre_computed_building_block_desc_path)
+        self.block_prop = np.load(pre_computed_building_block_desc_path)
 
         # set block mask
         block_mask: NDArray[np.bool_] = np.load(pre_computed_building_block_mask_path)
@@ -97,7 +108,7 @@ class SynthesisEnv(GraphBuildingEnv):
             1 + len(self.unirxn_list) + sum(indices.shape[0] for indices in self.birxn_block_indices.values())
         )
 
-        self.retro_analyzer: RetroSyntheticAnalyzer = RetroSyntheticAnalyzer(self.protocols, self.blocks)
+        self.retro_analyzer = MultiRetroSyntheticAnalyzer.create(self.protocols, self.blocks, num_workers=num_workers)
 
     def new(self) -> MolGraph:
         return MolGraph("")

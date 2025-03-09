@@ -1,15 +1,18 @@
 import json
 from collections import OrderedDict
+
 import numpy as np
 import torch
-from torch import Tensor
 import torch_geometric.data as gd
-from rdkit.Chem import BondType, ChiralType, Mol as RDMol
+from rdkit.Chem import BondType, ChiralType
+from rdkit.Chem import Mol as RDMol
+from torch import Tensor
 
-from gflownet.envs.graph_building_env import GraphBuildingEnvContext, ActionIndex
-from .action import RxnAction, RxnActionType, Protocol
-from .env import SynthesisEnv, MolGraph
+from gflownet.envs.graph_building_env import ActionIndex, GraphBuildingEnvContext
+from rxnflow.envs.building_block import MOL_PROPERTY_DIM, get_mol_features
 
+from .action import Protocol, RxnAction, RxnActionType
+from .env import MolGraph, SynthesisEnv
 
 DEFAULT_ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 DEFAULT_ATOM_CHARGE_RANGE = [-1, 0, 1]
@@ -40,16 +43,27 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.firstblock_list: list[Protocol] = env.firstblock_list
         self.unirxn_list: list[Protocol] = env.unirxn_list
         self.birxn_list: list[Protocol] = env.birxn_list
+        self.protocol_type_dict: dict[RxnActionType, list[Protocol]] = {
+            RxnActionType.Stop: self.stop_list,
+            RxnActionType.FirstBlock: self.firstblock_list,
+            RxnActionType.UniRxn: self.unirxn_list,
+            RxnActionType.BiRxn: self.birxn_list,
+        }
 
         # NOTE: Building Block
         self.blocks: list[str] = env.blocks
         self.num_blocks: int = len(self.blocks)
-        self.block_features: tuple[Tensor, Tensor] = (torch.from_numpy(env.block_fp), torch.from_numpy(env.block_desc))
+        self.block_fp: Tensor = torch.from_numpy(env.block_fp)
+        self.block_prop: Tensor = torch.from_numpy(env.block_prop)
+        self.block_fp_dim = self.block_fp.shape[-1]
+        self.block_prop_dim = self.block_prop.shape[-1]
+
+        # NOTE: For PB
         self.birxn_block_indices: dict[str, np.ndarray] = env.birxn_block_indices
-        self.num_block_features = self.block_features[0].shape[-1] + self.block_features[1].shape[-1]
         self.num_total_actions = (
             1 + len(self.unirxn_list) + sum(indices.shape[0] for indices in self.birxn_block_indices.values())
         )
+
         # NOTE: For Molecular Graph
         self.atom_attr_values = {
             "v": DEFAULT_ATOMS,
@@ -68,6 +82,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.num_node_dim = sum(len(v) for v in self.atom_attr_values.values())
         self.num_edge_dim = sum(len(v) for v in self.bond_attr_values.values())
         self.num_cond_dim = num_cond_dim
+        self.num_graph_dim = MOL_PROPERTY_DIM
 
         # NOTE: Action Type Order
         self.action_type_order: list[RxnActionType] = [
@@ -84,25 +99,34 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             RxnActionType.BckFirstBlock,
         ]
 
-    def get_block_data(self, block_indices: Tensor | int) -> Tensor:
+    def get_block_data(
+        self,
+        block_indices: Tensor | int,
+        device: str | torch.device | None = "cpu",
+    ) -> tuple[Tensor, Tensor]:
         """Get the block features for the given type and indices
 
         Parameters
         ----------
         block_indices : Tensor | int
             Block indices for the given block type
+        device: torch.device | None
+            torch device
 
         Returns
         -------
-        block_info: Tensor
-            descs: molecular feature of blocks
-            fp: molecular fingerprints of blocks
+        fp: Tensor
+            molecular fingerprints of blocks
+        prop: Tensor
+            molecular properties of blocks
         """
-        desc, fp = self.block_features
-        desc, fp = desc[block_indices], fp[block_indices]
+        prop = self.block_prop[block_indices]
+        fp = self.block_fp[block_indices]
         if fp.dim() == 1:
-            desc, fp = desc.view(1, -1), fp.view(1, -1)
-        return torch.cat([desc, fp.to(torch.float32)], dim=-1)
+            prop, fp = prop.unsqueeze(0), fp.unsqueeze(0)
+        fp = fp.to(dtype=torch.float32, device=device, non_blocking=True)
+        prop = prop.to(dtype=torch.float32, device=device, non_blocking=True)
+        return fp, prop
 
     def graph_to_Data(self, g: MolGraph) -> gd.Data:
         """Convert a networkx Graph to a torch geometric Data instance"""
@@ -117,6 +141,8 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             x[0, -1] = 1
             edge_attr = torch.zeros((0, self.num_edge_dim))
             edge_index = torch.zeros((2, 0), dtype=torch.long)
+            graph_attr = torch.zeros((self.num_graph_dim,))
+
         else:
             x = torch.zeros((len(g.nodes), self.num_node_dim))
             for i, n in enumerate(g.nodes):
@@ -136,11 +162,13 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                     edge_attr[i * 2, sl + idx] = 1
                     edge_attr[i * 2 + 1, sl + idx] = 1
             edge_index = torch.tensor([e for i, j in g.edges for e in [(i, j), (j, i)]], dtype=torch.long).view(-1, 2).T
+            graph_attr = torch.from_numpy(get_mol_features(self.graph_to_obj(g)))
 
         return dict(
             x=x,
             edge_index=edge_index,
             edge_attr=edge_attr,
+            graph_attr=graph_attr.reshape(1, -1),
             protocol_mask=self.create_masks(g).reshape(1, -1),
             sample_idx=g.graph["sample_idx"],
         )
@@ -263,7 +291,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                 action_repr = ("FirstBlock", action.block)
             elif action.action is RxnActionType.UniRxn:
                 rxn_template = self.protocol_dict[action.protocol].rxn.template
-                action_repr = ("UniFxn", rxn_template)
+                action_repr = ("UniRxn", rxn_template)
             elif action.action is RxnActionType.BiRxn:
                 rxn_template = self.protocol_dict[action.protocol].rxn.template
                 action_repr = ("BiRxn", rxn_template, action.block)

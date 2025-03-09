@@ -1,15 +1,17 @@
 import socket
 from pathlib import Path
-import torch
-import torch_geometric.data as gd
 from typing import Any
 
+import torch
+import torch_geometric.data as gd
+from omegaconf import OmegaConf
+
+import wandb
 from gflownet.algo.config import Backward
 from gflownet.utils.multiobjective_hooks import MultiObjectiveStatsHook
-
+from rxnflow.algo.trajectory_balance import SynthesisTB
 from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnv, SynthesisEnvContext
-from rxnflow.algo.trajectory_balance import SynthesisTB
 from rxnflow.models.gfn import RxnFlow
 from rxnflow.utils.misc import set_worker_env
 
@@ -48,9 +50,13 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         base.algo.tb.Z_learning_rate = 1e-3
         base.algo.tb.Z_lr_decay = 50_000
 
+        # RxnFlow model
         base.model.num_emb = 128
         base.model.graph_transformer.num_layers = 4
         base.model.num_mlp_layers = 1
+
+        # RxnFlow max len
+        base.algo.max_len = 3
 
         # From SEHFragMOOTrainer (No effect on single objective optimization)
         base.cond.weighted_prefs.preference_type = "dirichlet"
@@ -67,11 +73,16 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         base.validate_every = 0
         base.algo.num_from_policy = 64
         base.algo.valid_num_from_policy = 0
-        base.algo.train_random_action_prob = 0.05  # suggest to set positive value
+        base.algo.train_random_action_prob = 0.1  # suggest to set positive value
 
     def setup(self):
         self.cfg.cond.moo.num_objectives = len(self.cfg.task.moo.objectives)
         super().setup()
+
+        # load checkpoint
+        if self.cfg.pretrained_model_path is not None:
+            self.load_checkpoint(self.cfg.pretrained_model_path)
+
         # setup multi-objective optimization
         self.is_moo: bool = self.task.is_moo
         if self.is_moo:
@@ -94,7 +105,7 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         set_worker_env("task", self.task)
 
     def setup_env(self):
-        self.env = SynthesisEnv(self.cfg.env_dir)
+        self.env = SynthesisEnv(self.cfg.env_dir, self.cfg.num_workers_retrosynthesis)
 
     def setup_env_context(self):
         self.ctx = SynthesisEnvContext(self.env, num_cond_dim=self.task.num_cond_dim)
@@ -111,13 +122,27 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
 
-    def load_checkpoint(self, checkpoint_path: str | Path):
-        state = torch.load(checkpoint_path, map_location="cpu")
+    def load_checkpoint(self, checkpoint_path: str | Path, load_ema: bool = False):
+        state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         print(f"load pre-trained model from {checkpoint_path}")
         self.model.load_state_dict(state["models_state_dict"][0])
         if self.sampling_model is not self.model:
-            self.sampling_model.load_state_dict(state["sampling_model_state_dict"][0])
+            if load_ema and "sampling_model_state_dict" in state:
+                self.sampling_model.load_state_dict(state["sampling_model_state_dict"][0])
+            else:
+                self.sampling_model.load_state_dict(state["models_state_dict"][0])
         del state
+
+    def run(self, logger=None):
+        if wandb.run is not None:
+            wandb.config.update({"config": OmegaConf.to_container(self.cfg)})
+        super().run(logger)
+
+    def terminate(self):
+        super().terminate()
+        self.env.retro_analyzer.pool.shutdown(wait=True, cancel_futures=True)
+        if wandb.run is not None:
+            wandb.finish()
 
     # MOO setting
     def train_batch(self, batch: gd.Batch, epoch_idx: int, batch_idx: int, train_it: int) -> dict[str, Any]:
