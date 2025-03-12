@@ -21,12 +21,13 @@ class VinaTask(BaseTask):
         self.oracle_idx = 0
         self.filter = cfg.task.constraint.rule
 
+        assert cfg.task.docking.protein_path is not None, "Config.task.docking.protein is required"
         self.vina = VinaReward(
             cfg.task.docking.protein_path,
             cfg.task.docking.center,
             cfg.task.docking.ref_ligand_path,
             cfg.task.docking.size,
-            search_mode="balance",  # fast, balance, detail
+            search_mode="fast",  # fast, balance, detail
             num_workers=4,
         )
 
@@ -147,9 +148,9 @@ if __name__ == "__main__":
     config.log_dir = "./logs/debug-vina/"
     config.env_dir = "./data/envs/stock"
     config.overwrite_existing_exp = True
-    config.algo.max_len = 3
-    config.task.constraint.rule = "lipinski"
+    config.algo.action_subsampling.sampling_ratio = 0.1
 
+    config.task.constraint.rule = "lipinski"
     config.task.docking.protein_path = "./data/examples/6oim_protein.pdb"
     # config.task.docking.ref_ligand_path = "./data/examples/6oim_ligand.pdb"
     config.task.docking.center = (1.872, -8.260, -1.361)

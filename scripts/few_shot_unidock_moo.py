@@ -2,13 +2,15 @@ from argparse import ArgumentParser
 
 import wandb
 from rxnflow.config import Config, init_empty
-from rxnflow.tasks.unidock_vina_moo import VinaMOOTrainer
+from rxnflow.tasks.unidock_vina_fewshot import VinaMOOTrainer_Fewshot
 from rxnflow.utils.download import download_pretrained_weight
 
 
 def parse_args():
-    parser = ArgumentParser("RxnFlow", description="Vina-QED multi-objective optimization with GPU-accelerated UniDock")
-    opt_cfg = parser.add_argument_group("Protein Config")
+    parser = ArgumentParser(
+        "RxnFlow", description="GFlowNet few-shot training for Vina-QED multi-objective optimization"
+    )
+    opt_cfg = parser.add_argument_group("Pocket DB")
     opt_cfg.add_argument("-p", "--protein", type=str, required=True, help="Protein PDB Path")
     opt_cfg.add_argument("-l", "--ref_ligand", type=str, help="Reference Ligand Path (required if center is missing)")
     opt_cfg.add_argument("-c", "--center", nargs="+", type=float, help="Pocket Center (--center X Y Z)")
@@ -26,20 +28,21 @@ def parse_args():
     run_cfg = parser.add_argument_group("Operation Config")
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument("-o", "--out_dir", type=str, required=True, help="Output directory")
+    run_cfg.add_argument("--pretrained_model", type=str, help="Pretrained Model Path", default="qvina-unif-0-64")
     run_cfg.add_argument(
         "-n",
         "--num_iterations",
         type=int,
-        default=1000,
-        help="Number of training iterations (64 molecules for each iterations; default: 1000)",
+        default=1_000,
+        help="Number of training iterations (default: 1,000)",
     )
+    # since action embedding layer is frozen, we can use higher subsampling ratio
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
-        default=0.02,
-        help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.02)",
+        default=0.04,
+        help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.04)",
     )
-    run_cfg.add_argument("--pretrained_model", type=str, help="Pretrained Model Path")
     run_cfg.add_argument("--wandb", type=str, help="wandb job name")
     run_cfg.add_argument("--debug", action="store_true", help="For debugging option")
     return parser.parse_args()
@@ -49,9 +52,7 @@ def run(args):
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
-
-    if args.pretrained_model is not None:
-        config.pretrained_model_path = str(download_pretrained_weight(args.pretrained_model))
+    config.pretrained_model_path = str(download_pretrained_weight(args.pretrained_model))
 
     config.print_every = 1
     config.num_training_steps = args.num_iterations
@@ -64,11 +65,12 @@ def run(args):
     config.task.docking.center = args.center
     config.task.docking.size = args.size
 
+    # === GFN parameters === #
+    config.cond.temperature.sample_dist = "uniform"
+    config.cond.temperature.dist_params = [0.0, 64.0]
+
     # set EMA factor
-    if args.pretrained_model is None:
-        config.algo.sampling_tau = 0.9
-    else:
-        config.algo.sampling_tau = 0.98
+    config.algo.sampling_tau = 0.98
 
     # replay buffer
     config.replay.use = True
@@ -78,11 +80,11 @@ def run(args):
 
     if args.debug:
         config.overwrite_existing_exp = True
-    if args.wandb is not None:
-        wandb.init(project="rxnflow", name=args.wandb, group="unidock-mogfn")
+        config.print_every = 1
+    if args.wandb:
+        wandb.init(project="rxnflow", name=args.wandb, group="pocket-conditional")
 
-    trainer = VinaMOOTrainer(config)
-    trainer.task.vina.search_mode = args.search_mode  # set search mode
+    trainer = VinaMOOTrainer_Fewshot(config)
     trainer.run()
     trainer.terminate()
 
