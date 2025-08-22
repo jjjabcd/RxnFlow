@@ -41,7 +41,7 @@ def run(args, reactions: list[Reaction]):
 
 def get_block_data(block_path: str, template_path: str, save_directory_path: str, num_cpus: int):
     save_directory = Path(save_directory_path)
-    save_directory.mkdir(parents=True)
+    save_directory.mkdir(parents=True, exist_ok=True)
     save_template_path = save_directory / "template.txt"
     save_block_path = save_directory / "building_block.smi"
     save_mask_path = save_directory / "bb_mask.npy"

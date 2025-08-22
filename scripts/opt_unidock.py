@@ -1,9 +1,9 @@
 from argparse import ArgumentParser
 
 import wandb
-from rxnflow.config import Config, init_empty
-from rxnflow.tasks.unidock_vina import VinaTrainer
-from rxnflow.utils.download import download_pretrained_weight
+from src.rxnflow.config import Config, init_empty
+from src.rxnflow.tasks.unidock_vina import VinaTrainer
+from src.rxnflow.utils.download import download_pretrained_weight
 
 
 def parse_args():
