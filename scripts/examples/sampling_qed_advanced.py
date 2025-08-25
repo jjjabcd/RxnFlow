@@ -13,12 +13,12 @@ DEVICE = "cpu"
 
 if __name__ == "__main__":
     # checkpoint path
-    ckpt_path = "./logs/example/qed/model_state.pt"
+    ckpt_path = "./weights/qed-unif-0-64_20250512.pt"
 
     # change the parameter except for temperature
     config = init_empty(Config())
     config.algo.num_from_policy = 100  # batch size: 64 -> 100
-    config.env_dir = "./data/envs/stock"  # if you want to use catalog, just remove this line
+    config.env_dir = "./data/envs/catalog"  # using catalog environment
 
     # construct sampler
     sampler = QEDSampler(config, ckpt_path, DEVICE)

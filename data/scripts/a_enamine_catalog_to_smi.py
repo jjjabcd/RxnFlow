@@ -14,7 +14,7 @@ def main(block_path: str, save_block_path: str, num_cpus: int):
     with block_file.open() as f:
         lines = f.readlines()
     smiles_list = [lines[i].strip() for i in tqdm(range(1, len(lines))) if lines[i - 1].startswith(">  <smiles>")]
-    ids = [lines[i].strip() for i in tqdm(range(1, len(lines))) if lines[i - 1].startswith(">  <id>")]
+    ids = [lines[i].strip() for i in tqdm(range(1, len(lines))) if lines[i - 1].startswith(">  <Catalog_ID>")]
 
     assert len(smiles_list) == len(ids), "sdf file error, number of <smiles> and <id> should be matched"
     print("Including Mols:", len(smiles_list))
