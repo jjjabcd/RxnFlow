@@ -52,6 +52,6 @@ if __name__ == "__main__":
     with save_block_path.open("w") as w:
         for idx in indices:
             w.write(lines[idx])
-    np.save(save_mask_path, mask[:, :, indices])
+    np.save(save_mask_path, mask[:, indices])
     np.save(save_fp_path, fp[indices])
     np.save(save_desc_path, desc[indices])
