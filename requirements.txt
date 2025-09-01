@@ -14,6 +14,8 @@ tensorboard
 gitpython
 botorch
 gdown
+chromadb==1.0.20
+pubchempy
 
 # [project.optional-dependencies]
 # unidock
@@ -22,6 +24,9 @@ unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirecto
 
 # pmnet
 pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git
+
+# STOUT(IUPAC)
+# STOUT-pypi @ git+https://github.com/jjjabcd/Smiles-TO-iUpac-Translator.git
 
 # dev
 black
