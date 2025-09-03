@@ -17,6 +17,12 @@ gdown
 chromadb==1.0.20
 pubchempy
 
+# ChemLLM
+transformers
+einops
+accelerate
+sentencepiece
+
 # [project.optional-dependencies]
 # unidock
 openbabel-wheel
