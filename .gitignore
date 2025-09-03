@@ -13,6 +13,8 @@ slurm*
 typings/
 job*
 **/*benchmark*
+models/
+nohup.out
 
 # UV
 uv.lock
